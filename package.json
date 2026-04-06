@@ -1,0 +1,15 @@
+{
+  "name": "pcb-ai-validator",
+  "version": "1.0.0",
+  "description": "Intelligent debugging assistant for Altium Designer PCB projects",
+  "scripts": {
+    "start": "python backend/python/main.py"
+  },
+  "dependencies": {
+    "networkx": "^3.0",
+    "matplotlib": "^3.7",
+    "pyperclip": "^1.8",
+    "keyboard": "^0.13",
+    "pdf2markdown4llm": "^1.0"
+  }
+}

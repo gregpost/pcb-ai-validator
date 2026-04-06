@@ -1,11 +1,18 @@
-<div align="center">
+# pcbdoc-ai-validator
+Intelligent debugging assistant for Altium Designer PCB projects.  
 
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
+Usage:  
 
-  <h1>Built with AI Studio</h2>
+```shell
+python main.py
+```
 
-  <p>The fastest path from prompt to production with Gemini.</p>
+To ignore some script steps and start from a specific step:  
+```shell
+python main.py --step=6
+```
 
-  <a href="https://aistudio.google.com/apps">Start building</a>
-
-</div>
+To save output data to the same folder on every script run:  
+```shell
+python main.py --no-tmp-timestamp
+```
