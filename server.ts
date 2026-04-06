@@ -5,6 +5,10 @@ import express from 'express'; // express
 import { spawn } from 'child_process'; // spawn
 import fs from 'fs'; // fs
 import path from 'path'; // path
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const app = express();
 const port = 3000;
