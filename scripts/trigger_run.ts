@@ -1,47 +1,51 @@
-import { spawn, execSync } from 'child_process';
-import fs from 'fs';
-import path from 'path';
+import http from 'http';
+
+const BASE_URL = 'http://localhost:3000';
+
+async function request(path: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    http.get(`${BASE_URL}${path}`, (res) => {
+      let data = '';
+      res.on('data', (chunk) => data += chunk);
+      res.on('end', () => resolve(data));
+    }).on('error', reject);
+  });
+}
 
 async function run() {
-  console.log('--- Начинаю автоматическую проверку пайплайна ---');
+  console.log('--- Автоматический запуск пайплайна через API ---');
   
-  let pyPath = 'python3';
   try {
-    execSync('python3 --version');
+    // 1. Нажимаем "кнопку" (вызываем /run)
+    await request('/run');
+    console.log('Запрос на запуск отправлен. Начинаю опрос логов...\n');
+
+    // 2. Опрашиваем логи
+    let lastLog = '';
+    const poll = setInterval(async () => {
+      try {
+        const logs = await request('/logs');
+        if (logs !== lastLog) {
+          // Выводим только новые строки
+          const newContent = logs.substring(lastLog.length);
+          process.stdout.write(newContent);
+          lastLog = logs;
+        }
+
+        if (logs.includes('PROCESSING COMPLETED')) {
+          clearInterval(poll);
+          console.log('\n--- Проверка завершена ---');
+          process.exit(0);
+        }
+      } catch (e) {
+        console.error('Ошибка при опросе логов:', e);
+      }
+    }, 1000);
+
   } catch (e) {
-    pyPath = 'python';
+    console.error('Не удалось запустить пайплайн:', e);
+    process.exit(1);
   }
-
-  try {
-    execSync(`${pyPath} -m pip --version`);
-  } catch (e) {
-    console.log('pip не найден. Установка...');
-    const getPipFile = "get-pip.py";
-    if (!fs.existsSync(getPipFile)) {
-      execSync(`curl -sSL https://bootstrap.pypa.io/get-pip.py -o ${getPipFile}`);
-    }
-    execSync(`${pyPath} ${getPipFile} --user`);
-  }
-
-  console.log(`Используется: ${pyPath}`);
-
-  // 1. Установка зависимостей
-  const pip = spawn(pyPath, ['-m', 'pip', 'install', '--user', '-r', 'requirements.txt']);
-  pip.stdout.on('data', (d) => process.stdout.write(d));
-  pip.stderr.on('data', (d) => process.stderr.write(d));
-  
-  await new Promise((resolve) => pip.on('close', resolve));
-
-  // 2. Запуск пайплайна
-  const py = spawn(pyPath, ['backend/python/main.py'], {
-    env: { ...process.env, PYTHON_EXECUTABLE: pyPath }
-  });
-  py.stdout.on('data', (d) => process.stdout.write(d));
-  py.stderr.on('data', (d) => process.stderr.write(d));
-
-  py.on('close', (code) => {
-    console.log(`\n--- Проверка завершена (Код: ${code}) ---`);
-  });
 }
 
 run();
