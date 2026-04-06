@@ -53,7 +53,7 @@ def process_single_pcb(cfg, pcb_index, field_name, start_step):
     merge_pin_fields_path_1 = f"{graph_dir}/8_merge_pin_fields.txt"
     
     if start_step <= 3:
-        run_script(cfg, f"{cfg.PCB_TO_SCHEM_DIR_SRC}/run_pipeline.py", pcb_path, scheme_dir)
+        run_script(cfg, f"{cfg.PCB_TO_SCHEM_DIR_SRC}/run_pipeline.py", cfg.PYTHON_PATH, pcb_path, scheme_dir)
     
     if start_step <= 4:
         run_script(cfg, f"{cfg.GRAPH_DIR_SRC}/1_netlist_to_graph.py", netlist_path, netlist_to_graph_path)
