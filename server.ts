@@ -38,7 +38,13 @@ app.get('/', (req, res) => {
 
 app.get('/run', (req, res) => {
   logs = "--- Запуск Pipeline ---\n";
-  const py = spawn('python', ['backend/python/main.py']);
+  const py = spawn('python3', ['backend/python/main.py']);
+  
+  py.on('error', (err) => {
+    logs += `[CRITICAL ERROR] Не удалось запустить Python: ${err.message}\n`;
+    console.error(err);
+  });
+
   py.stdout.on('data', (d) => {
     logs += d.toString();
     console.log(d.toString());
@@ -48,7 +54,8 @@ app.get('/run', (req, res) => {
     console.error(d.toString());
   });
   py.on('close', (code) => {
-    logs += `\n--- Процесс завершен с кодом ${code} ---\n`;
+    logs += `\n--- ПРОЦЕСС ЗАВЕРШЕН (Код: ${code}) ---\n`;
+    logs += "PROCESSING COMPLETED\n"; // Метка для фронтенда
   });
   res.send('Started');
 });
