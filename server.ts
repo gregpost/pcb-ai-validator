@@ -1,5 +1,5 @@
-# file: server.ts
-# Minimal Express server to keep the application running in the preview environment
+// file: server.ts
+// Minimal Express server to keep the application running in the preview environment
 
 import express from 'express'; // express
 import { spawn } from 'child_process'; // spawn
