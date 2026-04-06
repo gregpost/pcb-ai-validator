@@ -3,13 +3,14 @@
   "version": "1.0.0",
   "description": "Intelligent debugging assistant for Altium Designer PCB projects",
   "scripts": {
-    "start": "python backend/python/main.py"
+    "dev": "tsx server.ts",
+    "start": "node server.js"
   },
   "dependencies": {
-    "networkx": "^3.0",
-    "matplotlib": "^3.7",
-    "pyperclip": "^1.8",
-    "keyboard": "^0.13",
-    "pdf2markdown4llm": "^1.0"
+    "express": "^4.21.2"
+  },
+  "devDependencies": {
+    "tsx": "^4.21.0",
+    "@types/express": "^4.17.21"
   }
 }
