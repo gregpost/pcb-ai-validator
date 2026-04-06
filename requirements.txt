@@ -1,0 +1,2 @@
+networkx
+pdf2markdown4llm

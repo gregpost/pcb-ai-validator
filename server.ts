@@ -66,45 +66,91 @@ app.get('/', (req, res) => {
   `);
 });
 
-app.get('/run', (req, res) => {
-  logs = "--- Запуск Pipeline ---\n";
+app.get('/run', async (req, res) => {
+  logs = "--- Инициализация окружения ---\n";
   
   // Создаем папку для логов, если её нет
   if (!fs.existsSync(LOG_DIR)) {
     fs.mkdirSync(LOG_DIR, { recursive: true });
   }
   
-  fs.writeFileSync(LOG_FILE, logs); // Очищаем файл и пишем заголовок
+  fs.writeFileSync(LOG_FILE, logs);
+
+  // 1. Детекция Python
+  let pyPath = 'python3';
+  try {
+    require('child_process').execSync('python3 --version');
+  } catch (e) {
+    try {
+      require('child_process').execSync('python --version');
+      pyPath = 'python';
+    } catch (e2) {
+      const msg = "[ERROR] Python не найден в системе (ни python3, ни python).\n";
+      logs += msg;
+      fs.appendFileSync(LOG_FILE, msg);
+      res.send('Python not found');
+      return;
+    }
+  }
+
+  logs += `Используется интерпретатор: ${pyPath}\n`;
+  logs += "--- Установка зависимостей ---\n";
+  fs.appendFileSync(LOG_FILE, `Используется интерпретатор: ${pyPath}\n--- Установка зависимостей ---\n`);
+
+  // 2. Установка зависимостей
+  const pip = spawn(pyPath, ['-m', 'pip', 'install', '-r', 'requirements.txt']);
   
-  const py = spawn('python3', ['backend/python/main.py']);
-  
-  py.on('error', (err) => {
-    const msg = `[CRITICAL ERROR] Не удалось запустить Python: ${err.message}\n`;
-    logs += msg;
-    fs.appendFileSync(LOG_FILE, msg);
-    console.error(err);
+  pip.stdout.on('data', (d) => {
+    logs += d.toString();
+    fs.appendFileSync(LOG_FILE, d.toString());
   });
 
-  py.stdout.on('data', (d) => {
-    const str = d.toString();
-    logs += str;
-    fs.appendFileSync(LOG_FILE, str);
-    console.log(str);
+  pip.stderr.on('data', (d) => {
+    logs += d.toString();
+    fs.appendFileSync(LOG_FILE, d.toString());
   });
-  py.stderr.on('data', (d) => {
-    const str = "[ERROR] " + d.toString();
-    logs += str;
-    fs.appendFileSync(LOG_FILE, str);
-    console.error(str);
-  });
-  py.on('close', (code) => {
-    const msg = `\n--- ПРОЦЕСС ЗАВЕРШЕН (Код: ${code}) ---\n`;
-    const savedMsg = `Логи сохранены в: ${LOG_FILE}\n`;
-    const completionMsg = "PROCESSING COMPLETED\n";
+
+  pip.on('close', (code) => {
+    if (code !== 0) {
+      logs += `\n[WARNING] Ошибка при установке зависимостей (Код: ${code}). Попытка запуска пайплайна...\n`;
+    } else {
+      logs += "\nЗависимости успешно проверены/установлены.\n";
+    }
     
-    logs += msg + savedMsg + completionMsg;
-    fs.appendFileSync(LOG_FILE, msg + savedMsg + completionMsg);
+    logs += "\n--- Запуск Pipeline ---\n";
+    fs.appendFileSync(LOG_FILE, "\n--- Запуск Pipeline ---\n");
+
+    // 3. Запуск основного скрипта
+    const py = spawn(pyPath, ['backend/python/main.py']);
+    
+    py.on('error', (err) => {
+      const msg = `[CRITICAL ERROR] Не удалось запустить Pipeline: ${err.message}\n`;
+      logs += msg;
+      fs.appendFileSync(LOG_FILE, msg);
+    });
+
+    py.stdout.on('data', (d) => {
+      const str = d.toString();
+      logs += str;
+      fs.appendFileSync(LOG_FILE, str);
+    });
+
+    py.stderr.on('data', (d) => {
+      const str = "[ERROR] " + d.toString();
+      logs += str;
+      fs.appendFileSync(LOG_FILE, str);
+    });
+
+    py.on('close', (code) => {
+      const msg = `\n--- ПРОЦЕСС ЗАВЕРШЕН (Код: ${code}) ---\n`;
+      const savedMsg = `Логи сохранены в: ${LOG_FILE}\n`;
+      const completionMsg = "PROCESSING COMPLETED\n";
+      
+      logs += msg + savedMsg + completionMsg;
+      fs.appendFileSync(LOG_FILE, msg + savedMsg + completionMsg);
+    });
   });
+
   res.send('Started');
 });
 
