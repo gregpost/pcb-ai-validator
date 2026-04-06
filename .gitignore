@@ -10,3 +10,4 @@ coverage/
 tmp/
 __pycache__/
 get-pip.py
+frontend/**/*.js
