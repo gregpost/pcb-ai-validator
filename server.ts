@@ -231,8 +231,9 @@ app.get('/run', async (req, res) => {
       pyPath = 'python';
     } catch (e2) {
       const msg = "[ERROR] Python не найден в системе.\n";
-      logs += msg;
-      fs.appendFileSync(LOG_FILE, msg);
+      const completionMsg = "PROCESSING COMPLETED\n";
+      logs += msg + completionMsg;
+      fs.appendFileSync(LOG_FILE, msg + completionMsg);
       res.send('Python not found');
       return;
     }
