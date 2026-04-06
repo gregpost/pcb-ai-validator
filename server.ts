@@ -68,9 +68,9 @@ app.get('/', (req, res) => {
             }
         </style>
     </head>
-    <body class="bg-[#1a1a1a] text-[#00ff00] font-mono min-h-screen flex overflow-hidden">
+    <body class="bg-[#1a1a1a] text-[#00ff00] font-mono h-screen flex overflow-hidden">
         <!-- Sidebar -->
-        <aside id="sidebar" class="bg-[#111] border-r border-[#333] w-64 flex-shrink-0 relative flex flex-col z-50">
+        <aside id="sidebar" class="bg-[#111] border-r border-[#333] w-64 flex-shrink-0 relative flex flex-col z-50 h-full">
             <div class="p-4 flex justify-between items-center border-b border-[#333]">
                 <span class="text-[#2563eb] font-bold text-lg">Меню</span>
                 <button id="toggleBtn" class="p-2 hover:bg-[#222] rounded-md text-gray-400 hover:text-white transition-colors" title="Свернуть">
@@ -90,28 +90,28 @@ app.get('/', (req, res) => {
         </aside>
 
         <!-- Main Content -->
-        <main class="flex-1 flex flex-col relative overflow-hidden">
+        <main class="flex-1 flex flex-col relative overflow-hidden h-full">
             <!-- Desktop Expand Button (Visible only when sidebar is collapsed) -->
             <button id="expandBtn" class="hidden md:flex absolute top-4 left-4 z-40 p-2 bg-[#111] border border-[#333] rounded-md text-gray-400 hover:text-white transition-colors shadow-lg" title="Развернуть">
                 <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>
             </button>
 
             <!-- Mobile Header Toggle -->
-            <div class="md:hidden p-4 border-b border-[#333] flex items-center bg-[#111]">
+            <div class="md:hidden p-4 border-b border-[#333] flex items-center bg-[#111] flex-shrink-0">
                 <button id="mobileToggleBtn" class="p-2 hover:bg-[#222] rounded-md text-gray-400 hover:text-white transition-colors">
                     <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="12" x2="21" y2="12"></line><line x1="3" y1="6" x2="21" y2="6"></line><line x1="3" y1="18" x2="21" y2="18"></line></svg>
                 </button>
                 <h1 class="ml-4 text-[#2563eb] font-bold">PCB AI Validator</h1>
             </div>
 
-            <div class="p-4 md:p-8 flex-1 overflow-auto">
-                <div class="max-w-5xl mx-auto">
-                    <header class="mb-8">
+            <div class="p-4 md:p-8 flex-1 flex flex-col overflow-hidden">
+                <div class="max-w-5xl mx-auto w-full flex-1 flex flex-col overflow-hidden">
+                    <header class="mb-6 flex-shrink-0">
                         <h1 class="hidden md:block text-4xl font-bold text-[#2563eb] mb-2">PCB AI Validator</h1>
                         <p class="text-gray-500 hidden md:block">Интеллектуальный помощник для отладки PCB проектов</p>
                     </header>
                     
-                    <div class="bg-[#111] border border-[#333] rounded-xl p-6 mb-8 shadow-xl">
+                    <div class="bg-[#111] border border-[#333] rounded-xl p-6 mb-8 shadow-xl flex-shrink-0">
                         <div class="flex flex-col md:flex-row md:items-center justify-between gap-6">
                             <div class="flex flex-col gap-1">
                                 <span class="text-xs uppercase tracking-wider text-gray-500 font-bold">Управление</span>
@@ -131,9 +131,9 @@ app.get('/', (req, res) => {
                         </div>
                     </div>
 
-                    <div class="relative group">
+                    <div class="relative group flex-1 flex flex-col min-h-0">
                         <div class="absolute -top-3 left-4 px-2 bg-[#1a1a1a] text-[10px] font-bold text-gray-500 tracking-widest uppercase z-10">Консоль вывода</div>
-                        <pre id="out" class="bg-black p-6 border border-[#333] rounded-xl overflow-auto max-h-[60vh] md:max-h-[65vh] white-space-pre-wrap text-sm leading-relaxed shadow-inner font-mono text-green-400/90">${logs}</pre>
+                        <pre id="out" class="bg-black p-6 border border-[#333] rounded-xl overflow-auto flex-1 white-space-pre-wrap text-sm leading-relaxed shadow-inner font-mono text-green-400/90">${logs}</pre>
                     </div>
                 </div>
             </div>
@@ -185,8 +185,15 @@ app.get('/', (req, res) => {
                     const r = await fetch('/logs');
                     const text = await r.text();
                     const out = document.getElementById('out');
+                    
+                    // Check if user is at the bottom before updating
+                    const isAtBottom = out.scrollHeight - out.scrollTop <= out.clientHeight + 50;
+                    
                     out.innerText = text;
-                    out.scrollTop = out.scrollHeight;
+                    
+                    if (isAtBottom) {
+                        out.scrollTop = out.scrollHeight;
+                    }
                     
                     if (text.includes('PROCESSING COMPLETED')) {
                         clearInterval(interval);
