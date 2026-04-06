@@ -43,7 +43,7 @@ class Config:
         ]
         
         # Имя исполняемого файла Python или асболютный путь
-        self.PYTHON_PATH = "python"
+        self.PYTHON_PATH = os.environ.get("PYTHON_EXECUTABLE", "python3")
         
         # ------------------------------------------------------------------------------------------------
         # ПУТИ К СКРИПТАМ (исходники)

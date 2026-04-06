@@ -20,7 +20,8 @@ def main():
         unique = []
         for l in '\n\n'.join(d['descs']).split('\n'):
             if l not in unique and l.strip(): unique.append(l)
-        blocks.append(rf"<<<{comp}_{pid}>>> START\n[NAME] = {d['name']}\n[DATASHEET] START\n{'\n'.join(unique)}\n[DATASHEET] END\n<<<{comp}_{pid}>>> END")
+        unique_str = '\n'.join(unique)
+        blocks.append(rf"<<<{comp}_{pid}>>> START\n[NAME] = {d['name']}\n[DATASHEET] START\n{unique_str}\n[DATASHEET] END\n<<<{comp}_{pid}>>> END")
     res = '\n\n'.join(blocks)
     if out_p:
         with open(out_p, 'w', encoding='utf-8') as f: f.write(res)
