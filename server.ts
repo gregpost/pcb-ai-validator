@@ -3,9 +3,13 @@
 
 import express from 'express'; // express
 import { spawn } from 'child_process'; // spawn
+import fs from 'fs'; // fs
+import path from 'path'; // path
 
 const app = express();
 const port = 3000;
+const LOG_DIR = path.join(__dirname, 'tmp', 'logs');
+const LOG_FILE = path.join(LOG_DIR, 'last_run.log');
 let logs = 'Ожидание запуска...\n';
 
 app.get('/', (req, res) => {
@@ -64,24 +68,42 @@ app.get('/', (req, res) => {
 
 app.get('/run', (req, res) => {
   logs = "--- Запуск Pipeline ---\n";
+  
+  // Создаем папку для логов, если её нет
+  if (!fs.existsSync(LOG_DIR)) {
+    fs.mkdirSync(LOG_DIR, { recursive: true });
+  }
+  
+  fs.writeFileSync(LOG_FILE, logs); // Очищаем файл и пишем заголовок
+  
   const py = spawn('python3', ['backend/python/main.py']);
   
   py.on('error', (err) => {
-    logs += `[CRITICAL ERROR] Не удалось запустить Python: ${err.message}\n`;
+    const msg = `[CRITICAL ERROR] Не удалось запустить Python: ${err.message}\n`;
+    logs += msg;
+    fs.appendFileSync(LOG_FILE, msg);
     console.error(err);
   });
 
   py.stdout.on('data', (d) => {
-    logs += d.toString();
-    console.log(d.toString());
+    const str = d.toString();
+    logs += str;
+    fs.appendFileSync(LOG_FILE, str);
+    console.log(str);
   });
   py.stderr.on('data', (d) => {
-    logs += "[ERROR] " + d.toString();
-    console.error(d.toString());
+    const str = "[ERROR] " + d.toString();
+    logs += str;
+    fs.appendFileSync(LOG_FILE, str);
+    console.error(str);
   });
   py.on('close', (code) => {
-    logs += `\n--- ПРОЦЕСС ЗАВЕРШЕН (Код: ${code}) ---\n`;
-    logs += "PROCESSING COMPLETED\n"; // Метка для фронтенда
+    const msg = `\n--- ПРОЦЕСС ЗАВЕРШЕН (Код: ${code}) ---\n`;
+    const savedMsg = `Логи сохранены в: ${LOG_FILE}\n`;
+    const completionMsg = "PROCESSING COMPLETED\n";
+    
+    logs += msg + savedMsg + completionMsg;
+    fs.appendFileSync(LOG_FILE, msg + savedMsg + completionMsg);
   });
   res.send('Started');
 });
