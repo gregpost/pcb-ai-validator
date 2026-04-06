@@ -3,6 +3,7 @@
 
 import express from 'express'; // express
 import { spawn } from 'child_process'; // spawn
+import path from 'path'; // path
 
 const app = express();
 const port = 3000;
@@ -59,7 +60,8 @@ app.get('/', (req, res) => {
 
 app.get('/run', (req, res) => {
   logs = "--- Запуск Pipeline ---\n";
-  const py = spawn('python3', ['backend/python/main.py']);
+  const pythonCwd = path.join(process.cwd(), 'backend', 'python');
+  const py = spawn('python3', ['main.py'], { cwd: pythonCwd });
   
   py.on('error', (err) => {
     logs += `[CRITICAL ERROR] Не удалось запустить Python: ${err.message}\n`;
