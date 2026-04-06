@@ -9,36 +9,19 @@ import path from 'path'; // path
 const app = express();
 const port = 3000;
 const LOG_DIR = path.join(__dirname, 'tmp', 'logs');
-
-app.use('/frontend', express.static(path.join(__dirname, 'frontend')));
 const LOG_FILE = path.join(LOG_DIR, 'last_run.log');
 let logs = 'Ожидание запуска...\n';
 
 app.get('/', (req, res) => {
   res.send(`
-    <head>
-      <meta name="viewport" content="width=device-width, initial-scale=1.0">
-      <link rel="stylesheet" href="/frontend/sidebar/sidebar.css">
-      <link rel="stylesheet" href="/frontend/sidebar/file_dialog/file_dialog.css">
-      <script src="/frontend/sidebar/sidebar.js"></script>
-      <script src="/frontend/sidebar/file_dialog/file_dialog.js"></script>
-    </head>
-    <body style="font-family: monospace; background: #1a1a1a; color: #00ff00; padding: 20px; margin: 0;">
-      <button onclick="sidebar.toggle()" style="position: fixed; top: 10px; left: 10px; z-index: 500; padding: 5px 10px; background: #2563eb; color: white; border: none; border-radius: 4px; cursor: pointer;">☰</button>
-      <div id="main-content" style="margin-left: 0; transition: margin-left 0.3s;">
-        <h1 style="color: #2563eb; margin-top: 40px;">PCB AI Validator - Console</h1>
-        <div style="display: flex; align-items: center; gap: 15px; margin-bottom: 20px;">
-          <button id="startBtn" onclick="run()" style="padding: 10px 20px; cursor: pointer; background: #2563eb; color: white; border: none; border-radius: 4px; font-weight: bold; font-size: 1.1em;">Запустить пайплайн</button>
-          <span id="status" style="color: #fbbf24; font-weight: bold;">Готов к запуску</span>
-        </div>
-        <pre id="out" style="background: #000; padding: 15px; border: 1px solid #333; overflow: auto; max-height: 75vh; white-space: pre-wrap;">${logs}</pre>
+    <body style="font-family: monospace; background: #1a1a1a; color: #00ff00; padding: 20px;">
+      <h1 style="color: #2563eb;">PCB AI Validator - Console</h1>
+      <div style="display: flex; align-items: center; gap: 15px; margin-bottom: 20px;">
+        <button id="startBtn" onclick="run()" style="padding: 10px 20px; cursor: pointer; background: #2563eb; color: white; border: none; border-radius: 4px; font-weight: bold; font-size: 1.1em;">Запустить пайплайн</button>
+        <span id="status" style="color: #fbbf24; font-weight: bold;">Готов к запуску</span>
       </div>
+      <pre id="out" style="background: #000; padding: 15px; border: 1px solid #333; overflow: auto; max-height: 75vh; white-space: pre-wrap;">${logs}</pre>
       <script>
-        const sidebar = new Sidebar();
-        const fileDialog = new FileDialog();
-        sidebar.addWidget(fileDialog.el);
-        sidebar.toggle(); // Start collapsed
-
         async function run() {
           const status = document.getElementById('status');
           const startBtn = document.getElementById('startBtn');
