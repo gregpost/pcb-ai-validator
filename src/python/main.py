@@ -12,7 +12,7 @@ def log_step(message):
     timestamp = time.strftime("%H:%M:%S")
     print(f"[{timestamp}] {message}")
 
-def run_script(cfg, script_name, *args, parallel=False):
+def run_script(cfg, script_name, *args, parallel=False, check=True):
     target_script = os.environ.get("TARGET_SCRIPT", "")
     script_basename = os.path.basename(script_name)
     
@@ -29,10 +29,18 @@ def run_script(cfg, script_name, *args, parallel=False):
             stderr=subprocess.DEVNULL
         )
     
-    return subprocess.run(cmd)
+    result = subprocess.run(cmd)
+    if check and result.returncode != 0:
+        log_step(f"[FATAL ERROR] Script {script_name} failed with code {result.returncode}")
+        sys.exit(result.returncode)
+    return result
 
 def process_single_pcb(cfg, pcb_index, field_name, start_step):
-    pcb_path = cfg.PCB_PATHS[pcb_index]
+    pcb_path = cfg.PCB_PATHS.get(pcb_index)
+    if not pcb_path or not os.path.exists(pcb_path):
+        log_step(f"[FATAL ERROR] PCB path not found for index {pcb_index}: {pcb_path}")
+        sys.exit(1)
+
     scheme_name = os.path.basename(pcb_path)
     log_step(f"=== Processing PCB index {pcb_index} as {field_name}: {scheme_name} ===")
     
@@ -77,7 +85,7 @@ def process_single_pcb(cfg, pcb_index, field_name, start_step):
             log_step(f"Processing pin {i}/{len(pins)}: {pin}")
             result = run_script(cfg, f"{cfg.GRAPH_DIR_SRC}/4_get_branch.py", pin, 
                                 simplify_passive_components_path,
-                                get_branch_path, cfg.COMMON_NETS_PATH)
+                                get_branch_path, cfg.COMMON_NETS_PATH, check=False)
             if result.returncode == 0:
                 continue
             run_script(cfg, f"{cfg.GRAPH_DIR_SRC}/5_graph_to_text.py", cfg.TARGET_COMPONENT,
@@ -122,16 +130,20 @@ def main():
         for component in cfg.COMPONENTS:
             pdf_path = f"{cfg.DATASHEETS_DIR}/{component}.pdf"
             md_path = f"{cfg.HUGE_FILE_TMP_DIR}/{component}.md"
-            run_script(cfg, f"{cfg.HUGE_FILE_DIR}/0_pdf_to_md.py", pdf_path, md_path)
+            if os.path.exists(pdf_path):
+                run_script(cfg, f"{cfg.HUGE_FILE_DIR}/0_pdf_to_md.py", pdf_path, md_path)
+            else:
+                log_step(f"[INFO] Skipping PDF conversion for {component}, file not found.")
 
     if start_step <= 2:        
         run_script(cfg, f"{cfg.HUGE_FILE_DIR}/1_clipboard_saver.py", cfg.CLIPBOARD_SAVER_PATH, parallel=True)
         for component in cfg.COMPONENTS:
             md_path = f"{cfg.HUGE_FILE_TMP_DIR}/{component}.md"
             pin_list_path = f"{cfg.PINS_DIR}/{component}.txt"
-            run_script(cfg, f"{cfg.HUGE_FILE_DIR}/2_large_file_slicer.py", md_path, 
-                       cfg.PROMPT_TEMPLATE_PATH_1, cfg.PROMPT_FOLDER, 
-                       cfg.FRAGMENT_FOLDER, pin_list_path)
+            if os.path.exists(md_path):
+                run_script(cfg, f"{cfg.HUGE_FILE_DIR}/2_large_file_slicer.py", md_path, 
+                           cfg.PROMPT_TEMPLATE_PATH_1, cfg.PROMPT_FOLDER, 
+                           cfg.FRAGMENT_FOLDER, pin_list_path)
         run_script(cfg, f"{cfg.HUGE_FILE_DIR}/3_pin_processor.py", cfg.CLIPBOARD_SAVER_PATH, cfg.PIN_PROCESSOR_PATH)
 
     text_appender_paths = []
@@ -145,7 +157,7 @@ def main():
     
     merged_text_appender = merge_all_results(cfg, text_appender_paths) if start_step <= 7 else None
     
-    if start_step <= 8 and merged_text_appender:
+    if start_step <= 8 and merged_text_appender and cfg.SCHEME_MAPPING:
         first_index = list(cfg.SCHEME_MAPPING.keys())[0]
         pin_proc = f"{cfg.GRAPH_DIR}/{first_index}/8_1_pin_processor.txt"
         merged_2 = f"{cfg.GRAPH_DIR}/12_merge_pin_fields.txt"
@@ -161,6 +173,8 @@ def main():
         if os.path.exists(sorted_ds):
             run_script(cfg, f"{cfg.HUGE_FILE_DIR}/1_clipboard_saver.py", cfg.CLIPBOARD_SAVER_PATH, parallel=True)
             run_script(cfg, f"{cfg.HUGE_FILE_DIR}/2_large_file_slicer.py", sorted_ds, cfg.PROMPT_TEMPLATE_PATH_2, cfg.PROMPT_FOLDER, cfg.FRAGMENT_FOLDER)
+
+    log_step("PROCESSING COMPLETED")
 
 if __name__ == "__main__":
     sys.exit(main())

@@ -1,13 +1,10 @@
-// file: src/main.tsx
-// Entry point for the React application using Vite
+import {StrictMode} from 'react';
+import {createRoot} from 'react-dom/client';
+import App from './App.tsx';
+import './index.css';
 
-import React from 'react'; // React
-import ReactDOM from 'react-dom/client'; // ReactDOM
-import App from './App'; // App
-import './index.css'; // index.css
-
-ReactDOM.createRoot(document.getElementById('root')!).render(
-  <React.StrictMode>
+createRoot(document.getElementById('root')!).render(
+  <StrictMode>
     <App />
-  </React.StrictMode>
+  </StrictMode>,
 );

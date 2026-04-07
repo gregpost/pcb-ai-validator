@@ -11,8 +11,6 @@ def main():
     if os.path.exists(target): os.chmod(target, stat.S_IWRITE)
     open(target, 'w', encoding='utf-8').close()
     print(f"Clipboard saver initialized (headless mode) for {target}")
-    # In a container, we don't have a clipboard or hotkeys.
-    # This script now just ensures the file exists.
 
 if __name__ == "__main__":
     main()

@@ -6,9 +6,6 @@ coverage/
 *.log
 .env*
 !.env.example
-.venv/
+*.pdf
+*.PcbDoc
 tmp/
-__pycache__/
-get-pip.py
-frontend/**/*.js
-frontend/bundle.js

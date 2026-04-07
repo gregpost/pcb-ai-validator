@@ -1,0 +1,15 @@
+# .gitingestignore
+.git/
+__pycache__/
+node_modules/
+.env
+*.pyc
+.DS_Store
+dist/
+build/
+*.log
+.venv/
+venv/
+.idea/
+.vscode/
+tmp/

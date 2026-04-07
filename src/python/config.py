@@ -10,37 +10,49 @@ class Config:
         # ОПРЕДЕЛЕНИЕ БАЗОВЫХ ПУТЕЙ
         # ------------------------------------------------------------------------------------------------
         
-        # Директория, где лежит этот файл (backend/python)
+        # Директория, где лежит этот файл (src/python)
         self.BASE_DIR = os.path.dirname(os.path.abspath(__file__))
         # Корень проекта
         self.PROJECT_ROOT = os.path.dirname(os.path.dirname(self.BASE_DIR))
-        # Директория ресурсов (backend/resources)
+        # Директория ресурсов (src/resources)
         self.RESOURCES_DIR = os.path.join(os.path.dirname(self.BASE_DIR), "resources")
         
         # ------------------------------------------------------------------------------------------------
-        # ОСНОВНЫЕ НАСТРОЙКИ (менять при каждом запуске)
+        # ОСНОВНЫЕ НАСТРОЙКИ (динамическое обнаружение файлов)
         # ------------------------------------------------------------------------------------------------
         
-        # Варианты путей к PcbDoc файлам
-        # ВНИМАНИЕ: Если PcbDocs лежат в корне, используем PROJECT_ROOT
-        self.PCB_PATHS = {
-            1: os.path.join(self.PROJECT_ROOT, "PcbDocs/RTL8370N-Switch-AR9331-WIFI.PcbDoc"),
-            2: os.path.join(self.PROJECT_ROOT, "PcbDocs/TL-WR703N.PcbDoc"),
-            3: os.path.join(self.PROJECT_ROOT, "PcbDocs/8_1000M_Switch_VT1.1.PcbDoc")
-        }
+        # Директория с загруженными PcbDoc (в корне проекта)
+        self.UPLOAD_PCB_DIR = os.path.join(self.PROJECT_ROOT, "PcbDocs")
+        
+        # Динамический поиск PcbDoc файлов
+        self.PCB_PATHS = {}
+        if os.path.exists(self.UPLOAD_PCB_DIR):
+            pcb_files = [f for f in os.listdir(self.UPLOAD_PCB_DIR) if f.lower().endswith('.pcbdoc')]
+            for i, filename in enumerate(sorted(pcb_files), 1):
+                self.PCB_PATHS[i] = os.path.join(self.UPLOAD_PCB_DIR, filename)
         
         # Список обрабатываемых схем: {индекс_в_PCB_PATHS: "имя_поля"}
-        self.SCHEME_MAPPING = {
-            1: "DEV_SCHEME",
-            3: "REF_SCHEME"
-        }
+        # Если файлов 2, назначаем DEV_SCHEME и REF_SCHEME, иначе SCHEME_N
+        self.SCHEME_MAPPING = {}
+        if len(self.PCB_PATHS) == 2:
+            self.SCHEME_MAPPING[1] = "DEV_SCHEME"
+            self.SCHEME_MAPPING[2] = "REF_SCHEME"
+        else:
+            for i in self.PCB_PATHS.keys():
+                self.SCHEME_MAPPING[i] = f"SCHEME_{i}"
         
-        # Список компонентов: первый - целевой (TARGET_COMPONENT)
-        self.COMPONENTS = [
-            "RTL8370N",      # целевой компонент
-            "G4801S",
-            "BY25Q16BSTIG"
-        ]
+        # Директория с даташитами
+        self.DATASHEETS_DIR = os.path.join(self.RESOURCES_DIR, "datasheets")
+        
+        # Динамический поиск PDF компонентов
+        self.COMPONENTS = []
+        if os.path.exists(self.DATASHEETS_DIR):
+            pdf_files = [f for f in os.listdir(self.DATASHEETS_DIR) if f.lower().endswith('.pdf')]
+            self.COMPONENTS = [os.path.splitext(f)[0] for f in sorted(pdf_files)]
+        
+        # Если компонентов нет, добавляем заглушку, чтобы избежать ошибок инициализации
+        if not self.COMPONENTS:
+            self.COMPONENTS = ["UNKNOWN_COMPONENT"]
         
         # Имя исполняемого файла Python или асболютный путь
         self.PYTHON_PATH = os.environ.get("PYTHON_EXECUTABLE", "python3")
@@ -82,7 +94,11 @@ class Config:
         # ВХОДНЫЕ/ВЫХОДНЫЕ ФАЙЛЫ (с использованием tmp)
         # ------------------------------------------------------------------------------------------------
         
-        self.TARGET_COMPONENT = self.COMPONENTS[0]
+        env_target = os.environ.get("TARGET_COMPONENT")
+        if env_target:
+            self.TARGET_COMPONENT = env_target
+        else:
+            self.TARGET_COMPONENT = self.COMPONENTS[0]
         
         self.COMMON_NETS_PATH = os.path.join(self.NETS_DIR, "common_nets.txt")
         self.COMPRESSED_DATASHEET_PATH = os.path.join(self.DATASHEETS_DIR, f"{self.TARGET_COMPONENT}_compressed.txt")
