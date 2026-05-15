@@ -9,6 +9,7 @@ export default function App() {
   const [isRunning, setIsRunning] = useState(false);
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [targetComponent, setTargetComponent] = useState('');
+  const [engine, setEngine] = useState<'typescript' | 'python'>('typescript');
   const [sidebarCollapsed, setSidebarCollapsed] = useState(window.innerWidth <= 768);
   const scrollRef = useRef<HTMLPreElement>(null);
   const isAtBottom = useRef(true);
@@ -51,8 +52,10 @@ export default function App() {
   const runPipeline = async () => {
     setIsRunning(true);
     setStatus('Выполняется...');
-    const url = targetComponent ? `/run?target=${encodeURIComponent(targetComponent)}` : '/run';
-    await fetch(url);
+    const url = new URL('/run', window.location.origin);
+    if (targetComponent) url.searchParams.append('target', targetComponent);
+    url.searchParams.append('engine', engine);
+    await fetch(url.toString());
   };
 
   useEffect(() => {
@@ -75,9 +78,9 @@ export default function App() {
 
         setLogs(displayLogs);
 
-        if (fullText.includes('PROCESSING COMPLETED')) {
+        if (fullText.includes('PROCESSING COMPLETED') || fullText.includes('ПРОЦЕСС ЗАВЕРШЕН С ОШИБКОЙ')) {
           clearInterval(interval);
-          setStatus('Завершено');
+          setStatus(fullText.includes('PROCESSING COMPLETED') ? 'Завершено' : 'Ошибка');
           setIsRunning(false);
         }
       } catch (err) {
@@ -114,6 +117,24 @@ export default function App() {
             Выбрать файлы
           </label>
           
+          <div className="space-y-2">
+            <h3 className="text-[10px] uppercase tracking-widest text-gray-500 font-bold px-1">Движок логики</h3>
+            <div className="flex bg-[#1a1a1a] border border-[#333] rounded p-1">
+              <button 
+                onClick={() => setEngine('typescript')}
+                className={`flex-1 py-1.5 text-[10px] rounded transition-all ${engine === 'typescript' ? 'bg-[#2563eb] text-white font-bold' : 'text-gray-500 hover:text-gray-300'}`}
+              >
+                TypeScript
+              </button>
+              <button 
+                onClick={() => setEngine('python')}
+                className={`flex-1 py-1.5 text-[10px] rounded transition-all ${engine === 'python' ? 'bg-[#2563eb] text-white font-bold' : 'text-gray-500 hover:text-gray-300'}`}
+              >
+                Python
+              </button>
+            </div>
+          </div>
+
           <div className="space-y-2">
             <h3 className="text-[10px] uppercase tracking-widest text-gray-500 font-bold px-1">Целевой компонент</h3>
             <input 
@@ -171,14 +192,33 @@ export default function App() {
               <div className="flex flex-col gap-1 md:text-right">
                 <span className="text-xs uppercase tracking-wider text-gray-500 font-bold">Текущий статус</span>
                 <div className="flex items-center md:justify-end gap-3">
-                  <div className={`w-3 h-3 rounded-full ${status === 'Выполняется...' ? 'bg-[#fbbf24] animate-pulse' : status === 'Завершено' ? 'bg-[#10b981]' : 'bg-[#fbbf24]'}`}></div>
-                  <span className={`font-bold text-xl tracking-tight ${status === 'Завершено' ? 'text-[#10b981]' : 'text-[#fbbf24]'}`}>{status}</span>
+                  <div className={`w-3 h-3 rounded-full ${status === 'Выполняется...' ? 'bg-[#fbbf24] animate-pulse' : status === 'Завершено' ? 'bg-[#10b981]' : status === 'Ошибка' ? 'bg-red-500' : 'bg-[#fbbf24]'}`}></div>
+                  <span className={`font-bold text-xl tracking-tight ${status === 'Завершено' ? 'text-[#10b981]' : status === 'Ошибка' ? 'text-red-500' : 'text-[#fbbf24]'}`}>{status}</span>
                 </div>
               </div>
             </div>
             <div className="relative group flex-1 flex flex-col min-h-0">
               <div className="absolute -top-3 left-4 px-2 bg-[#1a1a1a] text-[10px] font-bold text-gray-500 tracking-widest uppercase z-10">Консоль вывода</div>
-              <pre ref={scrollRef} className="bg-black p-6 border border-[#333] rounded-xl overflow-auto flex-1 whitespace-pre-wrap text-sm leading-relaxed shadow-inner font-mono text-green-400/90 scrollbar-thin scrollbar-thumb-[#333] scrollbar-track-black">{logs}</pre>
+              <pre ref={scrollRef} className="bg-black p-6 border border-[#333] rounded-xl overflow-auto flex-1 whitespace-pre-wrap text-sm leading-relaxed shadow-inner font-mono scrollbar-thin scrollbar-thumb-[#333] scrollbar-track-black">
+                {logs.split('\n').map((line, i) => {
+                  let className = "text-green-400/90";
+                  const isError = line.includes('[ERROR]') || line.includes('[FATAL ERROR]') || line.includes('[CRITICAL ERROR]');
+                  const isNpmNotice = line.includes('npm notice');
+                  
+                  if (isError && !isNpmNotice) {
+                    className = "text-red-500 font-bold";
+                  } else if (line.includes('[INFO]') || isNpmNotice) {
+                    className = "text-blue-400";
+                  } else if (line.startsWith('---')) {
+                    className = "text-yellow-500 font-bold";
+                  }
+                  return (
+                    <div key={i} className={className}>
+                      {line}
+                    </div>
+                  );
+                })}
+              </pre>
             </div>
           </div>
         </div>

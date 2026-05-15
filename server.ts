@@ -44,7 +44,10 @@ async function startServer() {
 
   app.get('/run', async (req, res) => {
     const target = req.query.target as string;
+    const engine = (req.query.engine as string) || 'typescript';
+    
     logs = "--- Инициализация окружения ---\n";
+    logs += `Движок: ${engine}\n`;
     if (target) {
       logs += `Целевой компонент: ${target}\n`;
     }
@@ -55,6 +58,51 @@ async function startServer() {
     
     fs.writeFileSync(LOG_FILE, logs);
 
+    if (engine === 'typescript') {
+      logs += "Запуск TypeScript Pipeline через tsx...\n";
+      fs.appendFileSync(LOG_FILE, "Запуск TypeScript Pipeline через tsx...\n");
+
+      const tsProcess = spawn('npx', ['tsx', 'src/typescript/main.ts'], {
+        env: { ...process.env, TARGET_COMPONENT: target }
+      });
+
+      tsProcess.on('error', (err) => {
+        const msg = `[CRITICAL ERROR] Не удалось запустить TypeScript Pipeline: ${err.message}\n`;
+        const failMsg = `\n[FATAL ERROR] ПРОЦЕСС ЗАВЕРШЕН С ОШИБКОЙ\n`;
+        logs += msg + failMsg;
+        fs.appendFileSync(LOG_FILE, msg + failMsg);
+      });
+
+      tsProcess.stdout.on('data', (d) => {
+        const str = d.toString();
+        logs += str;
+        fs.appendFileSync(LOG_FILE, str);
+      });
+
+      tsProcess.stderr.on('data', (d) => {
+        const str = "[ERROR] " + d.toString();
+        logs += str;
+        fs.appendFileSync(LOG_FILE, str);
+      });
+
+      tsProcess.on('close', (code) => {
+        if (code === 0) {
+          const msg = `\n--- ПРОЦЕСС ЗАВЕРШЕН УСПЕШНО ---\n`;
+          const completionMsg = "PROCESSING COMPLETED\n";
+          logs += msg + completionMsg;
+          fs.appendFileSync(LOG_FILE, msg + completionMsg);
+        } else {
+          const msg = `\n[FATAL ERROR] ПРОЦЕСС ЗАВЕРШЕН С ОШИБКОЙ (Код: ${code})\n`;
+          logs += msg;
+          fs.appendFileSync(LOG_FILE, msg);
+        }
+      });
+
+      res.send('Started');
+      return;
+    }
+
+    // Default Python Logic
     let pyPath = 'python3';
     try {
       execSync('python3 --version');
@@ -64,9 +112,9 @@ async function startServer() {
         pyPath = 'python';
       } catch (e2) {
         const msg = "[ERROR] Python не найден в системе.\n";
-        const completionMsg = "PROCESSING COMPLETED\n";
-        logs += msg + completionMsg;
-        fs.appendFileSync(LOG_FILE, msg + completionMsg);
+        const failMsg = "\n[FATAL ERROR] ПРОЦЕСС ЗАВЕРШЕН С ОШИБКОЙ\n";
+        logs += msg + failMsg;
+        fs.appendFileSync(LOG_FILE, msg + failMsg);
         res.send('Python not found');
         return;
       }
@@ -87,9 +135,9 @@ async function startServer() {
         logs += "pip успешно установлен.\n";
       } catch (e2) {
         const msg = `\n[FATAL ERROR] Не удалось установить pip: ${e2.message}\n`;
-        const completionMsg = "PROCESSING COMPLETED\n";
-        logs += msg + completionMsg;
-        fs.appendFileSync(LOG_FILE, msg + completionMsg);
+        const failMsg = "\n[FATAL ERROR] ПРОЦЕСС ЗАВЕРШЕН С ОШИБКОЙ\n";
+        logs += msg + failMsg;
+        fs.appendFileSync(LOG_FILE, msg + failMsg);
         return;
       }
     }
@@ -116,9 +164,9 @@ async function startServer() {
       if (code !== 0) {
         logs += pipOutput; // Show output only on error
         const msg = `\n[FATAL ERROR] Ошибка при установке зависимостей (Код: ${code}). Выполнение прервано.\n`;
-        const completionMsg = "PROCESSING COMPLETED\n";
-        logs += msg + completionMsg;
-        fs.appendFileSync(LOG_FILE, msg + completionMsg);
+        const failMsg = "\n[FATAL ERROR] ПРОЦЕСС ЗАВЕРШЕН С ОШИБКОЙ\n";
+        logs += msg + failMsg;
+        fs.appendFileSync(LOG_FILE, msg + failMsg);
         return;
       }
       
@@ -132,9 +180,9 @@ async function startServer() {
       
       py.on('error', (err) => {
         const msg = `[CRITICAL ERROR] Не удалось запустить Pipeline: ${err.message}\n`;
-        const completionMsg = "PROCESSING COMPLETED\n";
-        logs += msg + completionMsg;
-        fs.appendFileSync(LOG_FILE, msg + completionMsg);
+        const failMsg = `\n[FATAL ERROR] ПРОЦЕСС ЗАВЕРШЕН С ОШИБКОЙ\n`;
+        logs += msg + failMsg;
+        fs.appendFileSync(LOG_FILE, msg + failMsg);
       });
 
       py.stdout.on('data', (d) => {
@@ -150,12 +198,16 @@ async function startServer() {
       });
 
       py.on('close', (code) => {
-        const msg = `\n--- ПРОЦЕСС ЗАВЕРШЕН (Код: ${code}) ---\n`;
-        const savedMsg = `Логи сохранены в: ${LOG_FILE}\n`;
-        const completionMsg = "PROCESSING COMPLETED\n";
-        
-        logs += msg + savedMsg + completionMsg;
-        fs.appendFileSync(LOG_FILE, msg + savedMsg + completionMsg);
+        if (code === 0) {
+          const msg = `\n--- ПРОЦЕСС ЗАВЕРШЕН УСПЕШНО ---\n`;
+          const completionMsg = "PROCESSING COMPLETED\n";
+          logs += msg + completionMsg;
+          fs.appendFileSync(LOG_FILE, msg + completionMsg);
+        } else {
+          const msg = `\n[FATAL ERROR] ПРОЦЕСС ЗАВЕРШЕН С ОШИБКОЙ (Код: ${code})\n`;
+          logs += msg;
+          fs.appendFileSync(LOG_FILE, msg);
+        }
       });
     });
 
