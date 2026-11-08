@@ -10,7 +10,7 @@ def main():
     with open(pcb, 'r') as f:
         for l in f:
             if not l.startswith('RECORD=Component'): continue
-            p = {x.split('=')[0]: x.split('=')[1] for x in l.split('|') if '=' in x}
+            p = {x.split('=')[0].strip(): x.split('=')[1].strip() for x in l.split('|') if '=' in x}
             if 'ID' in p and 'SOURCEDESIGNATOR' in p: cmap[p['ID']] = p['SOURCEDESIGNATOR']
     with open(nets_f, 'r') as f_in, open(out_f, 'w') as f_out:
         for l in f_in:
@@ -18,6 +18,7 @@ def main():
             nid, conns = l.strip().split(':', 1)
             mapped = []
             for c in conns.split(','):
+                c = c.strip()
                 if '_' not in c: continue
                 cid, pin = c.split('_', 1)
                 mapped.append(f"{cmap.get(cid, cid)}_{pin}")

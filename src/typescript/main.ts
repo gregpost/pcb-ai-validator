@@ -35,7 +35,12 @@ async function main() {
 
   logStep("=== Starting TypeScript Pipeline ===");
 
-  // VALIDATION: Check for PCB files
+  // VALIDATION 1: Check for target component
+  if (!cfg.TARGET_COMPONENT) {
+    throw new Error(`[FATAL ERROR] Не указано имя целевого компонента (TARGET_COMPONENT). Запуск пайплайна невозможен.`);
+  }
+
+  // VALIDATION 2: Check for PCB files
   const pcbFiles = fs.existsSync(cfg.UPLOAD_PCB_DIR) 
     ? fs.readdirSync(cfg.UPLOAD_PCB_DIR).filter(f => f.toLowerCase().endsWith('.pcbdoc')) 
     : [];
@@ -44,13 +49,50 @@ async function main() {
     throw new Error(`[FATAL ERROR] В папке '${cfg.UPLOAD_PCB_DIR}' не найдено файлов *.PcbDoc для обработки.`);
   }
 
-  // VALIDATION: Check for PDF files
+  // VALIDATION 3: Check for PDF files
   const pdfFiles = fs.existsSync(cfg.DATASHEETS_DIR)
     ? fs.readdirSync(cfg.DATASHEETS_DIR).filter(f => f.toLowerCase().endsWith('.pdf'))
     : [];
     
   if (pdfFiles.length === 0) {
-    logStep("[WARNING] Ни одного PDF файла не было найдено в resources/datasheets. Конвертация будет пропущена.");
+    throw new Error(`[FATAL ERROR] В папке '${cfg.DATASHEETS_DIR}' не найдено ни одного PDF файла даташитов.`);
+  }
+
+  // VALIDATION 4: Target component PDF must exist
+  const targetPdf = pdfFiles.find(f => path.parse(f).name.toLowerCase() === cfg.TARGET_COMPONENT.toLowerCase());
+  if (!targetPdf) {
+    throw new Error(`[FATAL ERROR] Отсутствует обязательный PDF даташит для целевого компонента '${cfg.TARGET_COMPONENT}.pdf' в папке '${cfg.DATASHEETS_DIR}'.`);
+  }
+
+  // VALIDATION 5: Pin list file (.txt) must exist for EVERY pdf file
+  for (const pdfFile of pdfFiles) {
+    const compName = path.parse(pdfFile).name;
+    let pinFound = false;
+    if (fs.existsSync(cfg.PINS_DIR)) {
+      const pinFiles = fs.readdirSync(cfg.PINS_DIR);
+      pinFound = pinFiles.some(pf => pf.toLowerCase() === `${compName.toLowerCase()}.txt`);
+    }
+    if (!pinFound) {
+      throw new Error(`[FATAL ERROR] Для даташита '${pdfFile}' отсутствует обязательный файл со списком ножек '${cfg.PINS_DIR}/${compName}.txt'.`);
+    }
+  }
+
+  // VALIDATION 6: Target component presence in uploaded PcbDoc
+  let targetInPcb = false;
+  for (const pcbPath of Object.values(cfg.PCB_PATHS)) {
+    if (fs.existsSync(pcbPath)) {
+      try {
+        const buf = fs.readFileSync(pcbPath);
+        if (buf.toString('latin1').toLowerCase().includes(cfg.TARGET_COMPONENT.toLowerCase())) {
+          targetInPcb = true;
+          break;
+        }
+      } catch {}
+    }
+  }
+  if (!targetInPcb) {
+    const pcbNames = Object.values(cfg.PCB_PATHS).map(p => path.basename(p));
+    throw new Error(`[FATAL ERROR] Целевой компонент '${cfg.TARGET_COMPONENT}' отсутствует в загруженном файле платы (${pcbNames.join(', ')}). Запуск отменен.`);
   }
 
   // 1. PDF Conversion
@@ -86,6 +128,24 @@ async function main() {
       }
     }
     
+    // ПАУЗА ДЛЯ НЕЙРОСЕТИ (ШАГ 1: СЖАТИЕ ДАТАШИТА)
+    const readyFlag1 = path.join(cfg.TMP_DIR, "ready_for_user_answers_1.flag");
+    const resumeFlag1 = path.join(cfg.TMP_DIR, "resume_stage_1.flag");
+    fs.writeFileSync(readyFlag1, "PROMPTS_GENERATED_STAGE_1");
+    logStep("=== ОЖИДАНИЕ ВВОДА ОТВЕТОВ НЕЙРОСЕТИ (ЭТАП 1: ДАТАШИТ) ===");
+    logStep(`[USER_ACTION_REQUIRED] Сформированы промпты в папке: ${cfg.PROMPT_FOLDER}`);
+    logStep("[USER_ACTION_REQUIRED] Скопируйте промпты, отправьте в нейросеть, вставьте ответ в интерфейсе и нажмите 'Далее'.");
+
+    const cancelFlag1 = path.join(cfg.TMP_DIR, "cancel.flag");
+    while (!fs.existsSync(resumeFlag1)) {
+      if (fs.existsSync(cancelFlag1)) {
+        logStep("[USER_ABORT] Пайплайн принудительно остановлен пользователем.");
+        return;
+      }
+      await new Promise(r => setTimeout(r, 1000));
+    }
+
+    logStep("Ответы пользователя получены. Продолжение пайплайна...");
     if (fs.existsSync(cfg.CLIPBOARD_SAVER_PATH)) {
       pinProcessor(cfg.CLIPBOARD_SAVER_PATH, cfg.PIN_PROCESSOR_PATH);
     }
@@ -186,7 +246,30 @@ async function main() {
 
         if (fs.existsSync(sortedDs)) {
             logStep("Generating prompts for scheme-to-text...");
-            largeFileSlicer(sortedDs, cfg.PROMPT_TEMPLATE_PATH_2, cfg.PROMPT_FOLDER, cfg.FRAGMENT_FOLDER);
+            const promptFolder2 = path.join(cfg.GRAPH_DIR, "prompt_outputs_2");
+            const fragFolder2 = path.join(cfg.GRAPH_DIR, "fragments_2");
+            fs.mkdirSync(promptFolder2, { recursive: true });
+            fs.mkdirSync(fragFolder2, { recursive: true });
+
+            largeFileSlicer(sortedDs, cfg.PROMPT_TEMPLATE_PATH_2, promptFolder2, fragFolder2);
+
+            // ПАУЗА ДЛЯ НЕЙРОСЕТИ (ШАГ 2: КОНВЕРТАЦИЯ СХЕМЫ В ТЕКСТ)
+            const readyFlag2 = path.join(cfg.TMP_DIR, "ready_for_user_answers_2.flag");
+            const resumeFlag2 = path.join(cfg.TMP_DIR, "resume_stage_2.flag");
+            fs.writeFileSync(readyFlag2, "PROMPTS_GENERATED_STAGE_2");
+            logStep("=== ОЖИДАНИЕ ВВОДА ОТВЕТОВ НЕЙРОСЕТИ (ЭТАП 2: СХЕМА В ТЕКСТ) ===");
+            logStep(`[USER_ACTION_REQUIRED] Сформированы промпты для схемы в папке: ${promptFolder2}`);
+            logStep("[USER_ACTION_REQUIRED] Отправьте промпты в нейросеть, вставьте ответ и нажмите 'Далее' для финализации.");
+
+            const cancelFlag2 = path.join(cfg.TMP_DIR, "cancel.flag");
+            while (!fs.existsSync(resumeFlag2)) {
+              if (fs.existsSync(cancelFlag2)) {
+                logStep("[USER_ABORT] Пайплайн принудительно остановлен пользователем.");
+                return;
+              }
+              await new Promise(r => setTimeout(r, 1000));
+            }
+            logStep("Финальные ответы нейросети получены.");
         }
     }
   }

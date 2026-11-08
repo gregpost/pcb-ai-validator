@@ -3,7 +3,31 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>My Google AI Studio App</title>
+    <title>PCB AI Validator</title>
+    <meta name="description" content="Intelligent debugging assistant for Altium Designer PCB projects" />
+    <meta property="og:title" content="PCB AI Validator" />
+    <meta property="og:description" content="Intelligent debugging assistant for Altium Designer PCB projects" />
+    <script>
+      window.addEventListener('unhandledrejection', function(e) {
+        if (e && e.reason && (
+          String(e.reason).includes('WebSocket') ||
+          String(e.reason?.message || '').includes('WebSocket') ||
+          String(e.reason?.stack || '').includes('@vite/client')
+        )) {
+          e.stopImmediatePropagation();
+          e.preventDefault();
+        }
+      });
+      window.addEventListener('error', function(e) {
+        if (e && (
+          (e.message && e.message.includes('WebSocket')) ||
+          (e.filename && e.filename.includes('@vite/client'))
+        )) {
+          e.stopImmediatePropagation();
+          e.preventDefault();
+        }
+      });
+    </script>
   </head>
   <body>
     <div id="root"></div>

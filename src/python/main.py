@@ -126,6 +126,55 @@ def main():
     for d in [cfg.PCB_TO_SCHEM_DIR, cfg.GRAPH_DIR, cfg.HUGE_FILE_TMP_DIR]:
         os.makedirs(d, exist_ok=True)
 
+    # VALIDATION 1: Target component
+    if not cfg.TARGET_COMPONENT:
+        log_step("[FATAL ERROR] Не указано имя целевого компонента (TARGET_COMPONENT). Запуск пайплайна невозможен.")
+        sys.exit(1)
+
+    # VALIDATION 2: PCB files
+    if not cfg.PCB_PATHS:
+        log_step(f"[FATAL ERROR] В папке '{cfg.UPLOAD_PCB_DIR}' не найдено файлов *.PcbDoc для обработки.")
+        sys.exit(1)
+
+    # VALIDATION 3: PDF files
+    if not cfg.COMPONENTS:
+        log_step(f"[FATAL ERROR] В папке '{cfg.DATASHEETS_DIR}' не найдено ни одного PDF файла даташитов.")
+        sys.exit(1)
+
+    # VALIDATION 4: Target component PDF
+    if not any(comp.lower() == cfg.TARGET_COMPONENT.lower() for comp in cfg.COMPONENTS):
+        log_step(f"[FATAL ERROR] Отсутствует обязательный PDF даташит для целевого компонента '{cfg.TARGET_COMPONENT}.pdf' в папке '{cfg.DATASHEETS_DIR}'.")
+        sys.exit(1)
+
+    # VALIDATION 5: Pins file for every pdf
+    for comp in cfg.COMPONENTS:
+        pin_exists = False
+        if os.path.exists(cfg.PINS_DIR):
+            for f in os.listdir(cfg.PINS_DIR):
+                if f.lower() == f"{comp.lower()}.txt":
+                    pin_exists = True
+                    break
+        if not pin_exists:
+            log_step(f"[FATAL ERROR] Для даташита '{comp}.pdf' отсутствует обязательный файл со списком ножек '{cfg.PINS_DIR}/{comp}.txt'.")
+            sys.exit(1)
+
+    # VALIDATION 6: Target component presence in uploaded PcbDoc
+    target_in_pcb = False
+    for pcb_path in cfg.PCB_PATHS.values():
+        if os.path.exists(pcb_path):
+            try:
+                with open(pcb_path, 'rb') as f:
+                    content_raw = f.read()
+                    if cfg.TARGET_COMPONENT.lower().encode('latin1', errors='ignore') in content_raw.lower():
+                        target_in_pcb = True
+                        break
+            except Exception:
+                pass
+    if not target_in_pcb:
+        pcb_names = [os.path.basename(p) for p in cfg.PCB_PATHS.values()]
+        log_step(f"[FATAL ERROR] Целевой компонент '{cfg.TARGET_COMPONENT}' отсутствует в загруженном файле платы ({', '.join(pcb_names)}). Запуск пайплайна отменен.")
+        sys.exit(1)
+
     if start_step <= 1:
         for component in cfg.COMPONENTS:
             pdf_path = f"{cfg.DATASHEETS_DIR}/{component}.pdf"
@@ -144,6 +193,23 @@ def main():
                 run_script(cfg, f"{cfg.HUGE_FILE_DIR}/2_large_file_slicer.py", md_path, 
                            cfg.PROMPT_TEMPLATE_PATH_1, cfg.PROMPT_FOLDER, 
                            cfg.FRAGMENT_FOLDER, pin_list_path)
+
+        # ПАУЗА ДЛЯ НЕЙРОСЕТИ (ШАГ 1: СЖАТИЕ ДАТАШИТА)
+        ready_flag = f"{cfg.TMP_DIR}/ready_for_user_answers_1.flag"
+        resume_flag = f"{cfg.TMP_DIR}/resume_stage_1.flag"
+        with open(ready_flag, "w", encoding="utf-8") as f:
+            f.write("PROMPTS_GENERATED_STAGE_1")
+        log_step("=== ОЖИДАНИЕ ВВОДА ОТВЕТОВ НЕЙРОСЕТИ (ЭТАП 1: ДАТАШИТ) ===")
+        log_step(f"[USER_ACTION_REQUIRED] Сформированы промпты в папке: {cfg.PROMPT_FOLDER}")
+        log_step("[USER_ACTION_REQUIRED] Скопируйте промпты, отправьте в нейросеть, вставьте ответ в интерфейсе и нажмите 'Далее'.")
+        
+        while not os.path.exists(resume_flag):
+            if os.path.exists(f"{cfg.TMP_DIR}/cancel.flag"):
+                log_step("[USER_ABORT] Пайплайн принудительно остановлен пользователем.")
+                return 0
+            time.sleep(1)
+        
+        log_step("Ответы пользователя получены. Продолжение пайплайна...")
         run_script(cfg, f"{cfg.HUGE_FILE_DIR}/3_pin_processor.py", cfg.CLIPBOARD_SAVER_PATH, cfg.PIN_PROCESSOR_PATH)
 
     text_appender_paths = []
@@ -172,7 +238,29 @@ def main():
         
         if os.path.exists(sorted_ds):
             run_script(cfg, f"{cfg.HUGE_FILE_DIR}/1_clipboard_saver.py", cfg.CLIPBOARD_SAVER_PATH, parallel=True)
-            run_script(cfg, f"{cfg.HUGE_FILE_DIR}/2_large_file_slicer.py", sorted_ds, cfg.PROMPT_TEMPLATE_PATH_2, cfg.PROMPT_FOLDER, cfg.FRAGMENT_FOLDER)
+            prompt_folder_2 = os.path.join(cfg.GRAPH_DIR, "prompt_outputs_2")
+            frag_folder_2 = os.path.join(cfg.GRAPH_DIR, "fragments_2")
+            os.makedirs(prompt_folder_2, exist_ok=True)
+            os.makedirs(frag_folder_2, exist_ok=True)
+
+            run_script(cfg, f"{cfg.HUGE_FILE_DIR}/2_large_file_slicer.py", sorted_ds, cfg.PROMPT_TEMPLATE_PATH_2, prompt_folder_2, frag_folder_2)
+            
+            # ПАУЗА ДЛЯ НЕЙРОСЕТИ (ШАГ 2: КОНВЕРТАЦИЯ СХЕМЫ В ТЕКСТ)
+            ready_flag_2 = f"{cfg.TMP_DIR}/ready_for_user_answers_2.flag"
+            resume_flag_2 = f"{cfg.TMP_DIR}/resume_stage_2.flag"
+            with open(ready_flag_2, "w", encoding="utf-8") as f:
+                f.write("PROMPTS_GENERATED_STAGE_2")
+            log_step("=== ОЖИДАНИЕ ВВОДА ОТВЕТОВ НЕЙРОСЕТИ (ЭТАП 2: СХЕМА В ТЕКСТ) ===")
+            log_step(f"[USER_ACTION_REQUIRED] Сформированы промпты для схемы в папке: {prompt_folder_2}")
+            log_step("[USER_ACTION_REQUIRED] Отправьте промпты в нейросеть, вставьте ответ и нажмите 'Далее' для финализации.")
+            
+            while not os.path.exists(resume_flag_2):
+                if os.path.exists(f"{cfg.TMP_DIR}/cancel.flag"):
+                    log_step("[USER_ABORT] Пайплайн принудительно остановлен пользователем.")
+                    return 0
+                time.sleep(1)
+            
+            log_step("Финальные ответы нейросети получены.")
 
     log_step("PROCESSING COMPLETED")
 

@@ -78,7 +78,7 @@ export class Config {
     this.PROMPTS_DIR = path.join(this.RESOURCES_DIR, "prompts");
     this.NETS_DIR = path.join(this.RESOURCES_DIR, "nets");
 
-    this.TARGET_COMPONENT = process.env.TARGET_COMPONENT || this.COMPONENTS[0];
+    this.TARGET_COMPONENT = (process.env.TARGET_COMPONENT || '').trim();
     this.COMMON_NETS_PATH = path.join(this.NETS_DIR, "common_nets.txt");
     this.CLIPBOARD_SAVER_PATH = path.join(this.HUGE_FILE_TMP_DIR, "1_clipboard_saver.txt");
     this.PIN_PROCESSOR_PATH = path.join(this.GRAPH_DIR, "8_1_pin_processor.txt");

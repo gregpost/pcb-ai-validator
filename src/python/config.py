@@ -14,8 +14,8 @@ class Config:
         self.BASE_DIR = os.path.dirname(os.path.abspath(__file__))
         # Корень проекта
         self.PROJECT_ROOT = os.path.dirname(os.path.dirname(self.BASE_DIR))
-        # Директория ресурсов (src/resources)
-        self.RESOURCES_DIR = os.path.join(os.path.dirname(self.BASE_DIR), "resources")
+        # Директория ресурсов (resources в корне проекта)
+        self.RESOURCES_DIR = os.path.join(self.PROJECT_ROOT, "resources")
         
         # ------------------------------------------------------------------------------------------------
         # ОСНОВНЫЕ НАСТРОЙКИ (динамическое обнаружение файлов)
@@ -49,10 +49,6 @@ class Config:
         if os.path.exists(self.DATASHEETS_DIR):
             pdf_files = [f for f in os.listdir(self.DATASHEETS_DIR) if f.lower().endswith('.pdf')]
             self.COMPONENTS = [os.path.splitext(f)[0] for f in sorted(pdf_files)]
-        
-        # Если компонентов нет, добавляем заглушку, чтобы избежать ошибок инициализации
-        if not self.COMPONENTS:
-            self.COMPONENTS = ["UNKNOWN_COMPONENT"]
         
         # Имя исполняемого файла Python или асболютный путь
         self.PYTHON_PATH = os.environ.get("PYTHON_EXECUTABLE", "python3")
@@ -95,10 +91,7 @@ class Config:
         # ------------------------------------------------------------------------------------------------
         
         env_target = os.environ.get("TARGET_COMPONENT")
-        if env_target:
-            self.TARGET_COMPONENT = env_target
-        else:
-            self.TARGET_COMPONENT = self.COMPONENTS[0]
+        self.TARGET_COMPONENT = env_target.strip() if env_target else ""
         
         self.COMMON_NETS_PATH = os.path.join(self.NETS_DIR, "common_nets.txt")
         self.COMPRESSED_DATASHEET_PATH = os.path.join(self.DATASHEETS_DIR, f"{self.TARGET_COMPONENT}_compressed.txt")

@@ -1,4 +1,5 @@
 import fs from 'fs';
+import path from 'path';
 
 export function pinProcessor(inputPath: string, outputPath?: string): string {
   if (!fs.existsSync(inputPath)) return "";
@@ -24,6 +25,34 @@ export function pinProcessor(inputPath: string, outputPath?: string): string {
   }
 
   console.log(`[PIN_PROC] Found ${matchCount} datasheet fragments for ${Object.keys(records).length} unique pins.`);
+
+  // If no structured matches were found, use fallback
+  if (Object.keys(records).length === 0) {
+    const rawMatches = content.matchAll(/<<<([^_]+)_([^>]+?)>>>/g);
+    for (const raw of rawMatches) {
+      const comp = raw[1];
+      const pid = raw[2];
+      const key = `${comp}_${pid}`;
+      if (!records[key]) {
+        records[key] = { name: 'PIN', descs: ['DATA_CONNECTED'] };
+      }
+    }
+
+    if (Object.keys(records).length === 0) {
+      const target = (process.env.TARGET_COMPONENT || '').trim();
+      const projectRoot = path.resolve(__dirname, '..', '..', '..');
+      const pinFile = target ? path.join(projectRoot, 'resources', 'pins', `${target}.txt`) : '';
+      if (pinFile && fs.existsSync(pinFile)) {
+        const lines = fs.readFileSync(pinFile, 'utf8').split('\n');
+        for (const l of lines) {
+          const trimmed = l.trim();
+          if (trimmed && trimmed.includes('_')) {
+            records[trimmed] = { name: 'PIN', descs: ['DATA_CONNECTED'] };
+          }
+        }
+      }
+    }
+  }
 
   const blocks: string[] = [];
   for (const [key, data] of Object.entries(records)) {

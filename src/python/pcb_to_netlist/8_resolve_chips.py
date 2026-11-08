@@ -11,7 +11,7 @@ def main():
     with open(pcb, 'r') as f:
         for l in f:
             if not l.startswith('RECORD=Component'): continue
-            p = {x.split('=')[0]: x.split('=')[1] for x in l.split('|') if '=' in x}
+            p = {x.split('=')[0].strip(): x.split('=')[1].strip() for x in l.split('|') if '=' in x}
             des, lib, cid = p.get('SOURCEDESIGNATOR'), p.get('SOURCELIBREFERENCE'), p.get('ID')
             if des and not re.match(r'^R\d+', des):
                 name = None
@@ -27,7 +27,7 @@ def main():
         for l in f_in:
             if ':' not in l: continue
             nid, conns = l.strip().split(':', 1)
-            res = [f"{cmap.get(c.split('_')[0], c.split('_')[0])}_{c.split('_')[1]}" if '_' in c else c for c in conns.split(',')]
+            res = [f"{cmap.get(c.strip().split('_')[0], c.strip().split('_')[0])}_{c.strip().split('_')[1]}" if '_' in c.strip() else c.strip() for c in conns.split(',')]
             f_out.write(f"{nid}:{','.join(res)}\n")
 
 if __name__ == "__main__":

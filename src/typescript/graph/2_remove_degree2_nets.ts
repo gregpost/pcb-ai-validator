@@ -1,4 +1,5 @@
 import fs from 'fs';
+import path from 'path';
 import Graph from 'graphology';
 
 export function removeDegree2Nets(inputPath: string, outputPath: string): Graph {

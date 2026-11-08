@@ -16,7 +16,7 @@ function traverse(G: Graph, node: string, commonNets: Set<string>, maxNodes: num
             if (maxNodes > 0 && visited.size >= maxNodes) return;
             edges.push({ u: node, v: nbr });
             if (!commonNets.has(nbr) && !isChip(G, nbr)) {
-                edges.push(...traverse(G, nbr, commonNets, max_nodes, visited));
+                edges.push(...traverse(G, nbr, commonNets, maxNodes, visited));
             }
         }
     });
@@ -29,7 +29,7 @@ export function getBranch(G: Graph, startNode: string, commonNets: Set<string>, 
     if (!G.hasNode(startNode)) return H;
 
     const visited = new Set<string>();
-    const edges = traverse(G, startNode, commonNets, max_nodes, visited);
+    const edges = traverse(G, startNode, commonNets, maxNodes, visited);
     
     H.addNode(startNode, G.getNodeAttributes(startNode));
     edges.forEach(e => {

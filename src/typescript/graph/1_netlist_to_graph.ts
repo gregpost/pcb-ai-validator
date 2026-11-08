@@ -1,4 +1,5 @@
 import fs from 'fs';
+import path from 'path';
 import Graph from 'graphology';
 
 export function netlistToGraph(inputPath: string, outputPath: string): Graph {
