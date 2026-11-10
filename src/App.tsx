@@ -55,6 +55,50 @@ export interface GitHubRepoInfo {
   url: string;
 }
 
+export interface ProjectVersionInfo {
+  repo: string;
+  branch: string;
+  commitSha: string | null;
+  shortSha: string | null;
+  commitMessage: string;
+  author: string;
+  commitDate: string | null;
+  syncedAt: string | null;
+  updatedFilesCount?: number;
+}
+
+export interface ProjectUpdateCheckResult {
+  upToDate: boolean;
+  currentVersion: ProjectVersionInfo;
+  latestCommit: {
+    sha: string;
+    shortSha: string;
+    message: string;
+    author: string;
+    authorLogin: string;
+    authorAvatar: string;
+    date: string;
+    htmlUrl: string;
+  };
+  commitsAhead: Array<{
+    sha: string;
+    fullSha: string;
+    message: string;
+    fullMessage: string;
+    author: string;
+    date: string;
+  }>;
+  changedFiles: Array<{
+    filename: string;
+    status: string;
+    additions: number;
+    deletions: number;
+    changes: number;
+  }>;
+  repo: string;
+  branch: string;
+}
+
 export interface UploadQueueItem {
   id: string;
   name: string;
@@ -197,6 +241,111 @@ export default function App() {
       }
     } catch {}
   }, [gitHubToken]);
+
+  // GitHub project update state
+  const [gitHubModalTab, setGitHubModalTab] = useState<'update' | 'files'>('update');
+  const [projectVersion, setProjectVersion] = useState<ProjectVersionInfo | null>(null);
+  const [isCheckingUpdate, setIsCheckingUpdate] = useState(false);
+  const [updateCheckResult, setUpdateCheckResult] = useState<ProjectUpdateCheckResult | null>(null);
+  const [updateError, setUpdateError] = useState('');
+  const [isApplyingUpdate, setIsApplyingUpdate] = useState(false);
+  const [updateSuccessMessage, setUpdateSuccessMessage] = useState('');
+  const [updatedFilesList, setUpdatedFilesList] = useState<string[]>([]);
+
+  // Запрос текущей локальной версии проекта
+  const fetchProjectVersion = async () => {
+    try {
+      const resp = await fetch('/api/project/version');
+      if (resp.ok) {
+        const data = await resp.json();
+        setProjectVersion(data);
+      }
+    } catch (e) {
+      console.error('Failed fetching project version:', e);
+    }
+  };
+
+  // Проверка обновлений проекта на GitHub
+  const checkProjectUpdate = async (targetRepo?: string, targetBranch?: string) => {
+    const repoToCheck = (targetRepo || gitHubRepoInput || 'gregpost/pcbdoc-ai-validator').trim();
+    const branchToCheck = (targetBranch || gitHubSelectedBranch || 'main').trim();
+
+    setIsCheckingUpdate(true);
+    setUpdateError('');
+    setUpdateSuccessMessage('');
+
+    try {
+      const resp = await fetch('/api/project/check-update', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          repo: repoToCheck,
+          branch: branchToCheck,
+          token: gitHubToken.trim() || undefined
+        })
+      });
+
+      const data = await resp.json();
+      if (!resp.ok) {
+        setUpdateError(data.error || 'Не удалось проверить обновления проекта');
+        setIsCheckingUpdate(false);
+        return;
+      }
+
+      setUpdateCheckResult(data);
+      if (data.currentVersion) {
+        setProjectVersion(data.currentVersion);
+      }
+    } catch (err: any) {
+      setUpdateError('Ошибка сети при проверке обновлений: ' + err.message);
+    } finally {
+      setIsCheckingUpdate(false);
+    }
+  };
+
+  // Применение обновления проекта
+  const applyProjectUpdate = async () => {
+    if (!updateCheckResult?.latestCommit?.sha) return;
+
+    setIsApplyingUpdate(true);
+    setUpdateError('');
+    setUpdateSuccessMessage('');
+
+    try {
+      const resp = await fetch('/api/project/apply-update', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          repo: updateCheckResult.repo || gitHubRepoInput,
+          branch: updateCheckResult.branch || 'main',
+          commitSha: updateCheckResult.latestCommit.sha,
+          token: gitHubToken.trim() || undefined
+        })
+      });
+
+      const data = await resp.json();
+      if (!resp.ok) {
+        setUpdateError(data.error || 'Не удалось применить обновление проекта');
+        setIsApplyingUpdate(false);
+        return;
+      }
+
+      setUpdateSuccessMessage(data.message || 'Проект успешно обновлен');
+      setUpdatedFilesList(data.updatedFiles || []);
+      if (data.version) {
+        setProjectVersion(data.version);
+      }
+      setUpdateCheckResult(prev => prev ? { ...prev, upToDate: true } : null);
+
+      setLogs(prev => prev + `\n[INFO] ${data.message}\nОбновлено компонентов:\n - ${(data.updatedFiles || []).join('\n - ')}\n`);
+      fetchFiles();
+      fetchArtifacts();
+    } catch (err: any) {
+      setUpdateError('Ошибка сети при обновлении проекта: ' + err.message);
+    } finally {
+      setIsApplyingUpdate(false);
+    }
+  };
 
   // GitHub API handlers
   const connectGitHubRepo = async (targetRepo?: string) => {
@@ -629,6 +778,7 @@ export default function App() {
   useEffect(() => {
     fetchFiles();
     fetchArtifacts();
+    fetchProjectVersion();
     checkAiStatus();
     // При начальной загрузке страницы подгружаем последний лог, чтобы не терять вывод
     fetch('/logs')
@@ -1216,6 +1366,33 @@ export default function App() {
                 </p>
               )}
             </div>
+
+            {/* Блок версии и обновления проекта из GitHub */}
+            <div className="p-3 bg-[#151922] border border-[#263248] rounded-xl space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] uppercase font-bold text-gray-300 tracking-wider flex items-center gap-1.5">
+                  <svg className="w-3.5 h-3.5 fill-current text-white" viewBox="0 0 16 16"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+                  Версия проекта
+                </span>
+                <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-blue-950 text-blue-300 border border-blue-800">
+                  {projectVersion?.shortSha || '4b97814'}
+                </span>
+              </div>
+              <p className="text-[10px] text-gray-400 font-sans truncate" title={projectVersion?.commitMessage || 'feat: initialize project source code'}>
+                {projectVersion?.commitMessage || 'feat: initialize project source code'}
+              </p>
+              <button
+                type="button"
+                onClick={() => {
+                  setGitHubModalTab('update');
+                  setShowGitHubModal(true);
+                  checkProjectUpdate();
+                }}
+                className="w-full py-1.5 px-2 bg-[#1e2536] hover:bg-[#28324a] text-blue-300 hover:text-white border border-[#374563] rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-1.5 active:scale-95 shadow-sm"
+              >
+                <span>🔄 Обновить код из GitHub</span>
+              </button>
+            </div>
           </div>
         )}
 
@@ -1233,6 +1410,7 @@ export default function App() {
               <button
                 type="button"
                 onClick={() => {
+                  setGitHubModalTab('files');
                   setShowGitHubModal(true);
                   if (!gitHubConnectedRepo && gitHubRepoInput.trim()) {
                     connectGitHubRepo();
@@ -2028,13 +2206,13 @@ export default function App() {
                 </div>
                 <div>
                   <h2 className="text-lg sm:text-xl font-bold text-white flex items-center gap-2">
-                    Поиск файлов в GitHub репозитории
+                    GitHub: Обновление и поиск файлов
                     <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-blue-950 text-blue-300 border border-blue-800">
-                      PcbSch • PcbDoc • PDF • TXT
+                      v{projectVersion?.commit ? projectVersion.commit.slice(0, 7) : 'latest'}
                     </span>
                   </h2>
                   <p className="text-xs text-gray-400 mt-0.5">
-                    Укажите репозиторий GitHub для автоматического сканирования и пакетного скачивания файлов
+                    Синхронизация исходного кода по репозиторию GitHub и загрузка файлов в проект
                   </p>
                 </div>
               </div>
@@ -2048,8 +2226,441 @@ export default function App() {
               </button>
             </div>
 
-            {/* Блок подключения репозитория */}
-            <div className="p-4 sm:p-5 bg-[#141722] border-b border-[#242b3d] space-y-3 flex-shrink-0">
+            {/* Вкладки модального окна */}
+            <div className="bg-[#141722] border-b border-[#242b3d] px-4 sm:px-6 flex items-center gap-2 flex-shrink-0">
+              <button
+                type="button"
+                onClick={() => {
+                  setGitHubModalTab('update');
+                  if (!updateCheckResult && !isCheckingUpdate) {
+                    checkProjectUpdate();
+                  }
+                }}
+                className={`py-3 px-3.5 text-xs font-bold transition-all border-b-2 flex items-center gap-2 ${
+                  gitHubModalTab === 'update'
+                    ? 'border-blue-500 text-blue-400'
+                    : 'border-transparent text-gray-400 hover:text-gray-200'
+                }`}
+              >
+                <span>🔄 Обновление проекта</span>
+                {!updateCheckResult?.upToDate && updateCheckResult?.commitsAhead && updateCheckResult.commitsAhead.length > 0 && (
+                  <span className="px-1.5 py-0.2 bg-amber-500/20 text-amber-300 border border-amber-500/40 rounded-full text-[10px]">
+                    {updateCheckResult.commitsAhead.length} коммитов
+                  </span>
+                )}
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setGitHubModalTab('files')}
+                className={`py-3 px-3.5 text-xs font-bold transition-all border-b-2 flex items-center gap-2 ${
+                  gitHubModalTab === 'files'
+                    ? 'border-blue-500 text-blue-400'
+                    : 'border-transparent text-gray-400 hover:text-gray-200'
+                }`}
+              >
+                <span>📁 Поиск и скачивание файлов</span>
+                {gitHubFiles.length > 0 && (
+                  <span className="text-[10px] text-gray-500 font-normal">
+                    ({gitHubFiles.length})
+                  </span>
+                )}
+              </button>
+            </div>
+
+            {/* ВКЛАДКА 1: ОБНОВЛЕНИЕ ПРОЕКТА ПО GITHUB */}
+            {gitHubModalTab === 'update' && (
+              <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-5">
+                {/* Верхняя панель: выбор репозитория и ветки */}
+                <div className="bg-[#141722] border border-[#242b3d] rounded-2xl p-4 sm:p-5 space-y-4">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                    <div>
+                      <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                        <span>Синхронизация с upstream репозиторием</span>
+                        <span className="text-[10px] px-2 py-0.5 rounded bg-blue-900/60 text-blue-300 border border-blue-700/60 font-mono">
+                          Git Sync
+                        </span>
+                      </h3>
+                      <p className="text-xs text-gray-400 mt-0.5">
+                        Проверка наличия обновлений кода, диффа коммитов и безопасное накатывание изменений
+                      </p>
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => checkProjectUpdate()}
+                        disabled={isCheckingUpdate || isApplyingUpdate}
+                        className="px-4 py-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white rounded-xl text-xs font-bold transition-all flex items-center gap-2 shadow-lg shadow-blue-950/50 active:scale-95"
+                      >
+                        {isCheckingUpdate ? (
+                          <>
+                            <svg className="animate-spin w-3.5 h-3.5 text-white" viewBox="0 0 24 24" fill="none">
+                              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                            </svg>
+                            <span>Проверка...</span>
+                          </>
+                        ) : (
+                          <>
+                            <span>🔄</span>
+                            <span>Проверить обновления</span>
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="flex flex-col md:flex-row gap-3 items-stretch md:items-center">
+                    <div className="flex-1 relative">
+                      <span className="text-[10px] text-gray-400 block mb-1 font-mono uppercase">Репозиторий GitHub:</span>
+                      <input
+                        type="text"
+                        value={gitHubRepoInput}
+                        onChange={(e) => setGitHubRepoInput(e.target.value)}
+                        placeholder="owner/repo (напр. gregpost/pcbdoc-ai-validator)"
+                        className="w-full px-3 py-2 bg-[#0c0e14] border border-[#2d364b] focus:border-blue-500 rounded-xl text-xs text-white placeholder-gray-500 outline-none font-mono"
+                      />
+                    </div>
+
+                    <div className="w-full md:w-36">
+                      <span className="text-[10px] text-gray-400 block mb-1 font-mono uppercase">Ветка:</span>
+                      <input
+                        type="text"
+                        value={gitHubSelectedBranch || 'main'}
+                        onChange={(e) => setGitHubSelectedBranch(e.target.value)}
+                        placeholder="main"
+                        className="w-full px-3 py-2 bg-[#0c0e14] border border-[#2d364b] focus:border-blue-500 rounded-xl text-xs text-white placeholder-gray-500 outline-none font-mono"
+                      />
+                    </div>
+
+                    <div className="flex items-end">
+                      <button
+                        type="button"
+                        onClick={() => setShowTokenInput(!showTokenInput)}
+                        className={`px-3 py-2 text-xs rounded-xl border transition-colors flex items-center gap-1.5 font-medium ${
+                          gitHubToken.trim() || showTokenInput
+                            ? 'bg-blue-950/70 border-blue-600 text-blue-300'
+                            : 'bg-[#1b202e] border-[#2f384e] text-gray-400 hover:text-gray-200'
+                        }`}
+                        title="Указать GitHub Personal Access Token"
+                      >
+                        <span>Токен {gitHubToken.trim() ? '✓' : '(необязателен)'}</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Разъяснение по токену */}
+                  <div className="p-3 bg-blue-950/30 border border-blue-900/40 rounded-xl text-xs text-blue-200/90 flex items-start gap-2.5">
+                    <span className="text-blue-400 text-sm mt-0.5">ℹ️</span>
+                    <div>
+                      <p className="font-semibold text-blue-300">Зачем указывать токен GitHub?</p>
+                      <p className="text-[11px] text-blue-300/80 mt-0.5">
+                        Для публичного репозитория <code className="bg-blue-900/60 px-1 py-0.2 rounded text-blue-200 font-mono">gregpost/pcbdoc-ai-validator</code> токен <strong>НЕ требуется</strong> — проект обновляется свободно без каких-либо ключей.
+                        Токен нужен только для <strong>приватных репозиториев</strong> вашей организации либо чтобы расширить лимит анонимных обращений к GitHub API (с 60 до 5000 в час).
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Пресет основного репозитория */}
+                  <div className="flex items-center gap-2 pt-1">
+                    <span className="text-[11px] text-gray-400 font-bold">Основной репозиторий:</span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setGitHubRepoInput('gregpost/pcbdoc-ai-validator');
+                        checkProjectUpdate('gregpost/pcbdoc-ai-validator', 'main');
+                      }}
+                      className="px-2.5 py-1 bg-gradient-to-r from-blue-900 to-indigo-900 hover:from-blue-800 hover:to-indigo-800 text-blue-100 hover:text-white border border-blue-500/60 rounded-lg text-xs font-mono font-bold transition-all shadow-sm flex items-center gap-1.5"
+                    >
+                      <span className="text-amber-300">★</span>
+                      <span>gregpost/pcbdoc-ai-validator (main)</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* Статус выполнения обновления */}
+                {isApplyingUpdate && (
+                  <div className="p-5 bg-blue-950/50 border border-blue-500/60 rounded-2xl flex items-center gap-4 animate-pulse">
+                    <div className="w-10 h-10 rounded-xl bg-blue-600/30 border border-blue-400 flex items-center justify-center flex-shrink-0">
+                      <svg className="animate-spin w-5 h-5 text-blue-300" viewBox="0 0 24 24" fill="none">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                      </svg>
+                    </div>
+                    <div>
+                      <h4 className="text-sm font-bold text-white">Применение обновления проекта...</h4>
+                      <p className="text-xs text-blue-200/80 mt-0.5">
+                        Скачиваем архив с GitHub, распаковываем и обновляем модули проекта...
+                      </p>
+                    </div>
+                  </div>
+                )}
+
+                {/* Сообщение об успешном обновлении */}
+                {updateSuccessMessage && (
+                  <div className="p-4 bg-emerald-950/60 border border-emerald-500/60 rounded-2xl space-y-2 animate-fadeIn">
+                    <div className="flex items-center gap-2.5">
+                      <div className="w-7 h-7 rounded-lg bg-emerald-900/60 text-emerald-300 flex items-center justify-center font-bold text-sm">
+                        ✓
+                      </div>
+                      <div>
+                        <h4 className="text-sm font-bold text-emerald-200">Проект успешно обновлен!</h4>
+                        <p className="text-xs text-emerald-300/80">{updateSuccessMessage}</p>
+                      </div>
+                    </div>
+                    {updatedFilesList.length > 0 && (
+                      <div className="mt-2 pt-2 border-t border-emerald-900/40 text-xs">
+                        <span className="text-emerald-400 font-semibold block mb-1">
+                          Обновлено файлов ({updatedFilesList.length}):
+                        </span>
+                        <div className="max-h-36 overflow-y-auto space-y-1 font-mono text-[11px] text-gray-300 bg-[#0c0e14] p-2 rounded-lg border border-[#202738]">
+                          {updatedFilesList.map((f, i) => (
+                            <div key={i} className="flex items-center gap-1.5 text-emerald-300/90">
+                              <span>•</span>
+                              <span>{f}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Сообщение об ошибке */}
+                {updateError && (
+                  <div className="p-4 bg-red-950/60 border border-red-500/60 rounded-2xl flex items-start gap-3 animate-fadeIn">
+                    <div className="w-7 h-7 rounded-lg bg-red-900/60 text-red-300 flex items-center justify-center font-bold text-sm flex-shrink-0">
+                      ✕
+                    </div>
+                    <div>
+                      <h4 className="text-sm font-bold text-red-200">Ошибка при обновлении</h4>
+                      <p className="text-xs text-red-300/90 mt-0.5">{updateError}</p>
+                    </div>
+                  </div>
+                )}
+
+                {/* Сравнение версий: локальная vs GitHub */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {/* Локальная версия */}
+                  <div className="bg-[#12151f] border border-[#262e42] rounded-2xl p-4 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-bold text-gray-300 flex items-center gap-1.5">
+                        <span className="w-2 h-2 rounded-full bg-blue-400"></span>
+                        Текущая версия проекта (локальная)
+                      </span>
+                      <span className="px-2 py-0.5 rounded font-mono text-xs bg-[#1b2234] text-blue-300 border border-[#313e5e]">
+                        {projectVersion?.commit ? projectVersion.commit.slice(0, 7) : '4b97814'}
+                      </span>
+                    </div>
+
+                    <div className="space-y-1.5 text-xs text-gray-400 font-mono">
+                      <div>
+                        <span className="text-gray-500">Коммит: </span>
+                        <span className="text-gray-200">{projectVersion?.commit || '4b97814'}</span>
+                      </div>
+                      <div>
+                        <span className="text-gray-500">Сообщение: </span>
+                        <span className="text-gray-200">{projectVersion?.commitMessage || 'feat: initialize project source code'}</span>
+                      </div>
+                      {projectVersion?.updatedAt && (
+                        <div>
+                          <span className="text-gray-500">Дата синхронизации: </span>
+                          <span className="text-gray-300">{new Date(projectVersion.updatedAt).toLocaleString('ru-RU')}</span>
+                        </div>
+                      )}
+                      <div>
+                        <span className="text-gray-500">Ветка: </span>
+                        <span className="text-gray-300">{projectVersion?.branch || 'main'}</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Удаленная версия на GitHub */}
+                  <div className="bg-[#12151f] border border-[#262e42] rounded-2xl p-4 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-bold text-gray-300 flex items-center gap-1.5">
+                        <span className="w-2 h-2 rounded-full bg-purple-400"></span>
+                        Последняя версия на GitHub
+                      </span>
+                      {updateCheckResult?.latestCommit && (
+                        <span className="px-2 py-0.5 rounded font-mono text-xs bg-purple-950/60 text-purple-300 border border-purple-800/60">
+                          {updateCheckResult.latestCommit.sha.slice(0, 7)}
+                        </span>
+                      )}
+                    </div>
+
+                    {updateCheckResult?.latestCommit ? (
+                      <div className="space-y-1.5 text-xs text-gray-400 font-mono">
+                        <div>
+                          <span className="text-gray-500">Коммит: </span>
+                          <span className="text-gray-200">{updateCheckResult.latestCommit.sha}</span>
+                        </div>
+                        <div>
+                          <span className="text-gray-500">Автор: </span>
+                          <span className="text-gray-200">{updateCheckResult.latestCommit.author}</span>
+                        </div>
+                        <div>
+                          <span className="text-gray-500">Сообщение: </span>
+                          <span className="text-gray-200">{updateCheckResult.latestCommit.message}</span>
+                        </div>
+                        <div>
+                          <span className="text-gray-500">Дата: </span>
+                          <span className="text-gray-300">
+                            {updateCheckResult.latestCommit.date 
+                              ? new Date(updateCheckResult.latestCommit.date).toLocaleString('ru-RU') 
+                              : '-'}
+                          </span>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="text-xs text-gray-500 py-4 text-center">
+                        {isCheckingUpdate ? 'Запрос информации с GitHub...' : 'Нажмите «Проверить обновления» для получения данных'}
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* РЕЗУЛЬТАТ СРАВНЕНИЯ ВЕРСИЙ */}
+                {updateCheckResult && (
+                  <div className="space-y-4">
+                    {/* СЛУЧАЙ 1: Версии совпадают */}
+                    {updateCheckResult.upToDate ? (
+                      <div className="p-5 bg-[#0e1c15] border-2 border-emerald-500/50 rounded-2xl space-y-3">
+                        <div className="flex items-center gap-3">
+                          <div className="w-10 h-10 rounded-xl bg-emerald-950 border border-emerald-500 text-emerald-300 flex items-center justify-center font-black text-xl flex-shrink-0">
+                            ✓
+                          </div>
+                          <div>
+                            <h3 className="text-base font-bold text-emerald-300">
+                              Версии совпадают! У вас установлена самая свежая версия проекта.
+                            </h3>
+                            <p className="text-xs text-emerald-200/80 mt-0.5">
+                              Локальный код соответствует последнему коммиту <code className="font-mono text-emerald-300 bg-emerald-950/80 px-1 py-0.5 rounded">{updateCheckResult.latestCommit.sha.slice(0, 7)}</code> в ветке {updateCheckResult.branch}.
+                            </p>
+                          </div>
+                        </div>
+
+                        <div className="pt-2 border-t border-emerald-900/40 flex flex-wrap items-center justify-between gap-3 text-xs">
+                          <span className="text-gray-400">
+                            Никаких действий не требуется. Исходный код актуален.
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => applyProjectUpdate()}
+                            disabled={isApplyingUpdate}
+                            className="px-3 py-1.5 bg-[#182a20] hover:bg-[#203629] text-emerald-300 border border-emerald-700/60 rounded-xl text-xs font-medium transition-all"
+                            title="Перезагрузить исходники из GitHub заново"
+                          >
+                            Принудительно перезагрузить код
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      /* СЛУЧАЙ 2: Версии НЕ совпадают (доступно обновление) */
+                      <div className="p-5 bg-[#231709] border-2 border-amber-500/60 rounded-2xl space-y-4 shadow-xl shadow-amber-950/30">
+                        <div className="flex items-start gap-3">
+                          <div className="w-10 h-10 rounded-xl bg-amber-950 border border-amber-500 text-amber-300 flex items-center justify-center font-bold text-xl flex-shrink-0 mt-0.5">
+                            ⚡
+                          </div>
+                          <div className="flex-1">
+                            <h3 className="text-base font-bold text-amber-300 flex items-center gap-2">
+                              Найдена более свежая версия проекта на GitHub!
+                              <span className="text-xs font-mono px-2 py-0.5 rounded-full bg-amber-950 text-amber-200 border border-amber-700">
+                                +{updateCheckResult.commitsAhead?.length || 1} новых коммитов
+                              </span>
+                            </h3>
+                            <p className="text-xs text-amber-200/90 mt-1">
+                              На GitHub найдена более свежая версия проекта. Ниже приведены сообщения git и список изменений. 
+                              Вы можете утвердить обновление для автоматической перезаписи и обновления файлов или отменить операцию.
+                            </p>
+                          </div>
+                        </div>
+
+                        {/* Сообщения Git-коммитов */}
+                        <div className="space-y-2">
+                          <h4 className="text-xs font-bold text-amber-200/90 flex items-center gap-1.5 uppercase tracking-wider">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>
+                            Сообщения Git (список коммитов):
+                          </h4>
+
+                          <div className="max-h-48 overflow-y-auto space-y-2 bg-[#120d05] border border-amber-900/50 p-3 rounded-xl font-mono text-xs">
+                            {updateCheckResult.commitsAhead && updateCheckResult.commitsAhead.length > 0 ? (
+                              updateCheckResult.commitsAhead.map((c, i) => (
+                                <div key={i} className="p-2 bg-[#1c1409] border border-amber-900/40 rounded-lg space-y-1">
+                                  <div className="flex items-center justify-between text-[11px]">
+                                    <span className="text-amber-400 font-bold">{c.sha.slice(0, 7)}</span>
+                                    <span className="text-gray-400">{c.author} • {c.date ? new Date(c.date).toLocaleString('ru-RU') : ''}</span>
+                                  </div>
+                                  <p className="text-gray-200 font-sans text-xs">{c.message}</p>
+                                </div>
+                              ))
+                            ) : (
+                              <div className="p-2 bg-[#1c1409] border border-amber-900/40 rounded-lg space-y-1">
+                                <div className="flex items-center justify-between text-[11px]">
+                                  <span className="text-amber-400 font-bold">{updateCheckResult.latestCommit.sha.slice(0, 7)}</span>
+                                  <span className="text-gray-400">{updateCheckResult.latestCommit.author}</span>
+                                </div>
+                                <p className="text-gray-200 font-sans text-xs">{updateCheckResult.latestCommit.message}</p>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Кнопки подтверждения и отмены */}
+                        <div className="pt-3 border-t border-amber-900/50 flex flex-col sm:flex-row items-center justify-between gap-3">
+                          <p className="text-[11px] text-amber-300/80">
+                            Обновление затронет python-скрипты <code className="text-amber-200">graph/</code>, <code className="text-amber-200">pcb_to_netlist/</code>, <code className="text-amber-200">huge_file/</code> и конфигурации.
+                          </p>
+
+                          <div className="flex items-center gap-3 w-full sm:w-auto">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setUpdateCheckResult(null);
+                                setUpdateError('');
+                              }}
+                              disabled={isApplyingUpdate}
+                              className="flex-1 sm:flex-none px-4 py-2.5 bg-[#2a1c0d] hover:bg-[#382613] text-gray-300 hover:text-white rounded-xl text-xs font-bold transition-all border border-amber-900/60 active:scale-95"
+                            >
+                              ✕ Отменить
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={() => applyProjectUpdate()}
+                              disabled={isApplyingUpdate}
+                              className="flex-1 sm:flex-none px-6 py-2.5 bg-gradient-to-r from-emerald-600 to-green-600 hover:from-emerald-500 hover:to-green-500 text-white rounded-xl text-xs font-black transition-all shadow-xl shadow-green-950/60 flex items-center justify-center gap-2 active:scale-95 border border-emerald-400/80"
+                            >
+                              {isApplyingUpdate ? (
+                                <>
+                                  <svg className="animate-spin w-4 h-4 text-white" viewBox="0 0 24 24" fill="none">
+                                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                  </svg>
+                                  <span>Обновление...</span>
+                                </>
+                              ) : (
+                                <>
+                                  <span>✓</span>
+                                  <span>Утвердить обновление проекта</span>
+                                </>
+                              )}
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* ВКЛАДКА 2: ПОИСК И СКАЧИВАНИЕ ФАЙЛОВ */}
+            {gitHubModalTab === 'files' && (
+              <>
+                {/* Блок подключения репозитория */}
+                <div className="p-4 sm:p-5 bg-[#141722] border-b border-[#242b3d] space-y-3 flex-shrink-0">
               <form
                 onSubmit={(e) => {
                   e.preventDefault();
@@ -2566,11 +3177,21 @@ export default function App() {
                 })()
               )}
             </div>
+            </>
+            )}
 
             {/* Подвал модального окна */}
             <div className="p-3 sm:p-4 bg-[#181b24] border-t border-[#282f42] flex flex-wrap items-center justify-between gap-3 flex-shrink-0 text-xs">
               <p className="text-[11px] text-gray-400 font-sans">
-                Файлы плат сохраняются в <code className="text-blue-400">PcbDocs/</code>, даташиты — в <code className="text-red-400">resources/datasheets/</code>, выводы — в <code className="text-cyan-400">resources/pins/</code>.
+                {gitHubModalTab === 'update' ? (
+                  <>
+                    Синхронизация происходит напрямую с репозиторием GitHub. Токен требуется только для приватных репо.
+                  </>
+                ) : (
+                  <>
+                    Файлы плат сохраняются в <code className="text-blue-400">PcbDocs/</code>, даташиты — в <code className="text-red-400">resources/datasheets/</code>, выводы — в <code className="text-cyan-400">resources/pins/</code>.
+                  </>
+                )}
               </p>
 
               <div className="flex items-center gap-2">

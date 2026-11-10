@@ -777,6 +777,319 @@ async function startServer() {
     }
   });
 
+  // --- Эндпоинты обновления исходного кода проекта по GitHub ---
+  const PROJECT_VERSION_FILE = path.join(__dirname, '.project_version.json');
+
+  function getLocalProjectVersion() {
+    try {
+      if (fs.existsSync(PROJECT_VERSION_FILE)) {
+        return JSON.parse(fs.readFileSync(PROJECT_VERSION_FILE, 'utf8'));
+      }
+    } catch (e) {
+      console.error('Failed reading .project_version.json:', e);
+    }
+    return {
+      repo: 'gregpost/pcbdoc-ai-validator',
+      branch: 'main',
+      commitSha: '4b97814af416200b17ce5c4f7602f124f0bb9c34',
+      shortSha: '4b97814',
+      commitMessage: 'feat: initialize project source code',
+      author: 'gregpost',
+      commitDate: '2026-03-26T18:45:43Z',
+      syncedAt: '2026-03-26T18:45:43Z'
+    };
+  }
+
+  // Получение текущей локальной версии проекта
+  app.get('/api/project/version', (req, res) => {
+    res.json(getLocalProjectVersion());
+  });
+
+  // Проверка наличия обновлений проекта в GitHub
+  app.post('/api/project/check-update', async (req, res) => {
+    try {
+      const rawRepo = req.body.repoUrl || req.body.repo || 'gregpost/pcbdoc-ai-validator';
+      const branchReq = (req.body.branch || 'main').trim();
+      const token = req.body.token;
+
+      const parsed = parseGitHubRepo(rawRepo);
+      if (!parsed) {
+        return res.status(400).json({ error: 'Неверный адрес репозитория. Пример: gregpost/pcbdoc-ai-validator' });
+      }
+
+      const branch = parsed.branch || branchReq || 'main';
+      const headers = getGitHubHeaders(token);
+
+      // Получаем последний коммит в ветке
+      const commitRes = await fetch(`https://api.github.com/repos/${parsed.owner}/${parsed.repo}/commits/${encodeURIComponent(branch)}`, { headers });
+      if (!commitRes.ok) {
+        if (commitRes.status === 404) {
+          return res.status(404).json({ error: `Репозиторий или ветка "${parsed.owner}/${parsed.repo}@${branch}" не найдены на GitHub.` });
+        }
+        if (commitRes.status === 403) {
+          return res.status(403).json({ error: 'Превышен лимит запросов к GitHub API (60/час). Для продолжения укажите GitHub Personal Access Token.' });
+        }
+        return res.status(commitRes.status).json({ error: `Ошибка GitHub API: ${commitRes.statusText}` });
+      }
+
+      const commitData: any = await commitRes.json();
+      const latestSha = commitData.sha;
+      const latestCommit = {
+        sha: latestSha,
+        shortSha: latestSha ? latestSha.slice(0, 7) : '',
+        message: commitData.commit?.message || '',
+        author: commitData.commit?.author?.name || commitData.author?.login || 'GitHub User',
+        authorLogin: commitData.author?.login || '',
+        authorAvatar: commitData.author?.avatar_url || '',
+        date: commitData.commit?.author?.date || commitData.commit?.committer?.date || '',
+        htmlUrl: commitData.html_url || `https://github.com/${parsed.owner}/${parsed.repo}/commit/${latestSha}`
+      };
+
+      const localVersion = getLocalProjectVersion();
+      const localSha = (localVersion.commitSha || '').trim().toLowerCase();
+      const remoteSha = (latestSha || '').trim().toLowerCase();
+
+      // Проверяем совпадение версий
+      const isUpToDate = Boolean(localSha && remoteSha && (localSha === remoteSha || localSha.startsWith(remoteSha) || remoteSha.startsWith(localSha)));
+
+      let commitsAhead: any[] = [];
+      let changedFiles: any[] = [];
+
+      // Если есть отличия, запрашиваем сравнение коммитов
+      if (!isUpToDate && localVersion?.commitSha) {
+        try {
+          const compareRes = await fetch(`https://api.github.com/repos/${parsed.owner}/${parsed.repo}/compare/${localVersion.commitSha}...${latestSha}`, { headers });
+          if (compareRes.ok) {
+            const compareData: any = await compareRes.json();
+            commitsAhead = (compareData.commits || []).map((c: any) => ({
+              sha: c.sha?.slice(0, 7),
+              fullSha: c.sha,
+              message: (c.commit?.message || '').split('\n')[0],
+              fullMessage: c.commit?.message || '',
+              author: c.commit?.author?.name || c.author?.login || '',
+              date: c.commit?.author?.date || ''
+            }));
+            changedFiles = (compareData.files || []).map((f: any) => ({
+              filename: f.filename,
+              status: f.status,
+              additions: f.additions,
+              deletions: f.deletions,
+              changes: f.changes
+            }));
+          }
+        } catch (compErr) {
+          console.warn('Compare commits fetch failed:', compErr);
+        }
+      }
+
+      // Если список коммитов пуст, но версии отличаются, выводим хотя бы последний коммит
+      if (!isUpToDate && commitsAhead.length === 0) {
+        commitsAhead = [{
+          sha: latestCommit.shortSha,
+          fullSha: latestCommit.sha,
+          message: latestCommit.message.split('\n')[0],
+          fullMessage: latestCommit.message,
+          author: latestCommit.author,
+          date: latestCommit.date
+        }];
+      }
+
+      res.json({
+        upToDate: isUpToDate,
+        currentVersion: localVersion,
+        latestCommit,
+        commitsAhead,
+        changedFiles,
+        repo: `${parsed.owner}/${parsed.repo}`,
+        branch
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Применение обновления проекта из GitHub
+  app.post('/api/project/apply-update', async (req, res) => {
+    try {
+      const rawRepo = req.body.repoUrl || req.body.repo || 'gregpost/pcbdoc-ai-validator';
+      const branchReq = (req.body.branch || 'main').trim();
+      const token = req.body.token;
+      const targetSha = req.body.commitSha;
+
+      const parsed = parseGitHubRepo(rawRepo);
+      if (!parsed) {
+        return res.status(400).json({ error: 'Неверный адрес репозитория' });
+      }
+
+      const branch = targetSha || parsed.branch || branchReq || 'main';
+      const headers = getGitHubHeaders(token);
+
+      // Скачиваем tarball архива
+      const archiveUrl = `https://api.github.com/repos/${parsed.owner}/${parsed.repo}/tarball/${encodeURIComponent(branch)}`;
+      const tarRes = await fetch(archiveUrl, { headers });
+      if (!tarRes.ok) {
+        return res.status(tarRes.status).json({ error: `Не удалось скачать исходный код репозитория (${tarRes.statusText})` });
+      }
+
+      const tarBuffer = Buffer.from(await tarRes.arrayBuffer());
+      const tempExtractDir = path.join(__dirname, 'tmp', `gh_update_${Date.now()}`);
+      fs.mkdirSync(tempExtractDir, { recursive: true });
+
+      const tarFilePath = path.join(tempExtractDir, 'repo.tar.gz');
+      fs.writeFileSync(tarFilePath, tarBuffer);
+
+      // Распаковываем архив
+      execSync(`tar -xzf "${tarFilePath}" -C "${tempExtractDir}" --strip-components=1`);
+
+      const updatedFiles: string[] = [];
+
+      // 1. Обновляем директории со скриптами Python
+      const pythonTargetDir = path.join(__dirname, 'src', 'python');
+      fs.mkdirSync(pythonTargetDir, { recursive: true });
+
+      const scriptDirs = ['graph', 'huge_file', 'pcb_to_netlist'];
+      for (const d of scriptDirs) {
+        const srcD = path.join(tempExtractDir, d);
+        const dstD = path.join(pythonTargetDir, d);
+        if (fs.existsSync(srcD)) {
+          fs.cpSync(srcD, dstD, { recursive: true, force: true });
+          const count = fs.readdirSync(srcD).length;
+          updatedFiles.push(`src/python/${d}/ (${count} файлов)`);
+        }
+      }
+
+      // main.py
+      const srcMain = path.join(tempExtractDir, 'main.py');
+      if (fs.existsSync(srcMain)) {
+        const upstreamMain = fs.readFileSync(srcMain, 'utf8');
+        // Сохраняем исходный main_upstream.py
+        fs.writeFileSync(path.join(pythonTargetDir, 'main_upstream.py'), upstreamMain);
+        
+        // Если upstream содержит флаги ожидания ответов, копируем прямо в main.py, иначе адаптируем
+        if (upstreamMain.includes('ready_for_user_answers_1.flag')) {
+          fs.writeFileSync(path.join(pythonTargetDir, 'main.py'), upstreamMain);
+        } else {
+          // Гарантируем сохранение логики пауз для LLM
+          let mergedMain = upstreamMain;
+          if (mergedMain.includes('3_pin_processor.py') && !mergedMain.includes('ready_for_user_answers_1.flag')) {
+            const pauseSnippet = `
+        # ПАУЗА ДЛЯ НЕЙРОСЕТИ (ШАГ 1: СЖАТИЕ ДАТАШИТА)
+        ready_flag = f"{cfg.TMP_DIR}/ready_for_user_answers_1.flag"
+        resume_flag = f"{cfg.TMP_DIR}/resume_stage_1.flag"
+        with open(ready_flag, "w", encoding="utf-8") as f:
+            f.write("PROMPTS_GENERATED_STAGE_1")
+        log_step("=== ОЖИДАНИЕ ВВОДА ОТВЕТОВ НЕЙРОСЕТИ (ЭТАП 1: ДАТАШИТ) ===")
+        log_step(f"[USER_ACTION_REQUIRED] Сформированы промпты в папке: {cfg.PROMPT_FOLDER}")
+        log_step("[USER_ACTION_REQUIRED] Скопируйте промпты, отправьте в нейросеть, вставьте ответ в интерфейсе и нажмите 'Далее'.")
+        
+        while not os.path.exists(resume_flag):
+            if os.path.exists(f"{cfg.TMP_DIR}/cancel.flag"):
+                log_step("[USER_ABORT] Пайплайн принудительно остановлен пользователем.")
+                return 0
+            time.sleep(1)
+        
+        log_step("Ответы пользователя получены. Продолжение пайплайна...")
+`;
+            mergedMain = mergedMain.replace(/run_script\(cfg,\s*f"\{cfg\.HUGE_FILE_DIR\}\/3_pin_processor\.py"/, `${pauseSnippet}        run_script(cfg, f"{cfg.HUGE_FILE_DIR}/3_pin_processor.py"`);
+          }
+          fs.writeFileSync(path.join(pythonTargetDir, 'main.py'), mergedMain);
+        }
+        updatedFiles.push('src/python/main.py');
+      }
+
+      // config.py
+      const srcConfig = path.join(tempExtractDir, 'config.py');
+      if (fs.existsSync(srcConfig)) {
+        fs.copyFileSync(srcConfig, path.join(pythonTargetDir, 'config_upstream.py'));
+        updatedFiles.push('src/python/config_upstream.py');
+      }
+
+      // 2. Ресурсы: datasheets, pins, pcbdocs
+      if (fs.existsSync(path.join(tempExtractDir, 'datasheets'))) {
+        const targetDatasheets = path.join(__dirname, 'resources', 'datasheets');
+        fs.mkdirSync(targetDatasheets, { recursive: true });
+        const items = fs.readdirSync(path.join(tempExtractDir, 'datasheets'));
+        for (const item of items) {
+          fs.copyFileSync(path.join(tempExtractDir, 'datasheets', item), path.join(targetDatasheets, item));
+          updatedFiles.push(`resources/datasheets/${item}`);
+        }
+      }
+
+      if (fs.existsSync(path.join(tempExtractDir, 'pins'))) {
+        const targetPins = path.join(__dirname, 'resources', 'pins');
+        fs.mkdirSync(targetPins, { recursive: true });
+        const items = fs.readdirSync(path.join(tempExtractDir, 'pins'));
+        for (const item of items) {
+          fs.copyFileSync(path.join(tempExtractDir, 'pins', item), path.join(targetPins, item));
+          updatedFiles.push(`resources/pins/${item}`);
+        }
+      }
+
+      if (fs.existsSync(path.join(tempExtractDir, 'pcbdocs'))) {
+        const targetPcb = path.join(__dirname, 'PcbDocs');
+        fs.mkdirSync(targetPcb, { recursive: true });
+        const items = fs.readdirSync(path.join(tempExtractDir, 'pcbdocs'));
+        for (const item of items) {
+          fs.copyFileSync(path.join(tempExtractDir, 'pcbdocs', item), path.join(targetPcb, item));
+          updatedFiles.push(`PcbDocs/${item}`);
+        }
+      }
+
+      // Очистка временной директории
+      try {
+        fs.rmSync(tempExtractDir, { recursive: true, force: true });
+      } catch {}
+
+      // Запрашиваем информацию о коммите с GitHub для фиксации в файле версий
+      let appliedCommitInfo: any = {};
+      try {
+        const commitRes = await fetch(`https://api.github.com/repos/${parsed.owner}/${parsed.repo}/commits/${encodeURIComponent(branch)}`, { headers });
+        if (commitRes.ok) {
+          const cData: any = await commitRes.json();
+          appliedCommitInfo = {
+            sha: cData.sha,
+            shortSha: cData.sha?.slice(0, 7),
+            message: cData.commit?.message || '',
+            author: cData.commit?.author?.name || cData.author?.login || '',
+            date: cData.commit?.author?.date || ''
+          };
+        }
+      } catch {}
+
+      if (!appliedCommitInfo.sha) {
+        appliedCommitInfo = {
+          sha: targetSha || 'latest',
+          shortSha: (targetSha || 'latest').slice(0, 7),
+          message: 'Обновлено из репозитория GitHub',
+          date: new Date().toISOString()
+        };
+      }
+
+      const updatedVersion = {
+        repo: `${parsed.owner}/${parsed.repo}`,
+        branch: parsed.branch || branchReq || 'main',
+        commitSha: appliedCommitInfo.sha,
+        shortSha: appliedCommitInfo.shortSha,
+        commitMessage: appliedCommitInfo.message,
+        author: appliedCommitInfo.author,
+        commitDate: appliedCommitInfo.date,
+        syncedAt: new Date().toISOString(),
+        updatedFilesCount: updatedFiles.length
+      };
+
+      fs.writeFileSync(PROJECT_VERSION_FILE, JSON.stringify(updatedVersion, null, 2), 'utf8');
+
+      res.json({
+        success: true,
+        message: `Проект успешно обновлен до версии ${appliedCommitInfo.shortSha}: «${appliedCommitInfo.message?.split('\n')[0]}»`,
+        version: updatedVersion,
+        updatedFiles
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // Endpoints for interactive AI prompt handling
   app.get('/ai-status', (req, res) => {
     try {
