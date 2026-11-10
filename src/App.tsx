@@ -64,11 +64,23 @@ export interface ProjectVersionInfo {
   author: string;
   commitDate: string | null;
   syncedAt: string | null;
+  appVersion?: string;
+  build?: number;
+  releaseName?: string;
+  fileSource?: string;
   updatedFilesCount?: number;
 }
 
 export interface ProjectUpdateCheckResult {
   upToDate: boolean;
+  hasVersionDiff?: boolean;
+  versionDiffStatus?: 'newer' | 'older' | 'same';
+  versionComparisonMessage?: string;
+  localAppVersion?: { version: string; build?: number; releaseName?: string; fileSource: string };
+  remoteAppVersion?: { version: string; build?: number; releaseName?: string; fileSource: string } | null;
+  hasCodeDiff?: boolean;
+  diffFiles?: Array<{ path: string; status: 'modified' | 'added' | 'deleted' }>;
+  checkedFilesCount?: number;
   currentVersion: ProjectVersionInfo;
   latestCommit: {
     sha: string;
@@ -203,8 +215,8 @@ export default function App() {
   const [showGitHubModal, setShowGitHubModal] = useState(false);
   const [gitHubRepoInput, setGitHubRepoInput] = useState(() => {
     const saved = localStorage.getItem('pcb_github_repo_input');
-    if (!saved || saved === 'OLIMEX/OLINUXINO') {
-      return 'gregpost/pcbdoc-ai-validator';
+    if (!saved || saved === 'OLIMEX/OLINUXINO' || saved === 'gregpost/pcbdoc-ai-validator') {
+      return 'gregpost/pcb-ai-validator';
     }
     return saved;
   });
@@ -267,7 +279,7 @@ export default function App() {
 
   // Проверка обновлений проекта на GitHub
   const checkProjectUpdate = async (targetRepo?: string, targetBranch?: string) => {
-    const repoToCheck = (targetRepo || gitHubRepoInput || 'gregpost/pcbdoc-ai-validator').trim();
+    const repoToCheck = (targetRepo || gitHubRepoInput || 'gregpost/pcb-ai-validator').trim();
     const branchToCheck = (targetBranch || gitHubSelectedBranch || 'main').trim();
 
     setIsCheckingUpdate(true);
@@ -1374,9 +1386,14 @@ export default function App() {
                   <svg className="w-3.5 h-3.5 fill-current text-white" viewBox="0 0 16 16"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
                   Версия проекта
                 </span>
-                <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-blue-950 text-blue-300 border border-blue-800">
-                  {projectVersion?.shortSha || '4b97814'}
-                </span>
+                <div className="flex items-center gap-1 font-mono text-[10px]">
+                  <span className="px-1.5 py-0.5 rounded bg-blue-900/60 text-blue-200 border border-blue-700/60 font-bold" title="Версия из version.json">
+                    v{projectVersion?.appVersion || '1.0.1'}
+                  </span>
+                  <span className="px-1.5 py-0.5 rounded bg-[#1f2638] text-gray-400 border border-[#313e58]" title="Git коммит">
+                    {projectVersion?.shortSha || 'd766ddd'}
+                  </span>
+                </div>
               </div>
               <p className="text-[10px] text-gray-400 font-sans truncate" title={projectVersion?.commitMessage || 'feat: initialize project source code'}>
                 {projectVersion?.commitMessage || 'feat: initialize project source code'}
@@ -2318,7 +2335,7 @@ export default function App() {
                         type="text"
                         value={gitHubRepoInput}
                         onChange={(e) => setGitHubRepoInput(e.target.value)}
-                        placeholder="owner/repo (напр. gregpost/pcbdoc-ai-validator)"
+                        placeholder="owner/repo (напр. gregpost/pcb-ai-validator)"
                         className="w-full px-3 py-2 bg-[#0c0e14] border border-[#2d364b] focus:border-blue-500 rounded-xl text-xs text-white placeholder-gray-500 outline-none font-mono"
                       />
                     </div>
@@ -2356,7 +2373,7 @@ export default function App() {
                     <div>
                       <p className="font-semibold text-blue-300">Зачем указывать токен GitHub?</p>
                       <p className="text-[11px] text-blue-300/80 mt-0.5">
-                        Для публичного репозитория <code className="bg-blue-900/60 px-1 py-0.2 rounded text-blue-200 font-mono">gregpost/pcbdoc-ai-validator</code> токен <strong>НЕ требуется</strong> — проект обновляется свободно без каких-либо ключей.
+                        Для публичного репозитория <code className="bg-blue-900/60 px-1 py-0.2 rounded text-blue-200 font-mono">gregpost/pcb-ai-validator</code> токен <strong>НЕ требуется</strong> — проект обновляется свободно без каких-либо ключей.
                         Токен нужен только для <strong>приватных репозиториев</strong> вашей организации либо чтобы расширить лимит анонимных обращений к GitHub API (с 60 до 5000 в час).
                       </p>
                     </div>
@@ -2368,13 +2385,13 @@ export default function App() {
                     <button
                       type="button"
                       onClick={() => {
-                        setGitHubRepoInput('gregpost/pcbdoc-ai-validator');
-                        checkProjectUpdate('gregpost/pcbdoc-ai-validator', 'main');
+                        setGitHubRepoInput('gregpost/pcb-ai-validator');
+                        checkProjectUpdate('gregpost/pcb-ai-validator', 'main');
                       }}
                       className="px-2.5 py-1 bg-gradient-to-r from-blue-900 to-indigo-900 hover:from-blue-800 hover:to-indigo-800 text-blue-100 hover:text-white border border-blue-500/60 rounded-lg text-xs font-mono font-bold transition-all shadow-sm flex items-center gap-1.5"
                     >
                       <span className="text-amber-300">★</span>
-                      <span>gregpost/pcbdoc-ai-validator (main)</span>
+                      <span>gregpost/pcb-ai-validator (main)</span>
                     </button>
                   </div>
                 </div>
@@ -2449,19 +2466,29 @@ export default function App() {
                         <span className="w-2 h-2 rounded-full bg-blue-400"></span>
                         Текущая версия проекта (локальная)
                       </span>
-                      <span className="px-2 py-0.5 rounded font-mono text-xs bg-[#1b2234] text-blue-300 border border-[#313e5e]">
-                        {projectVersion?.commit ? projectVersion.commit.slice(0, 7) : '4b97814'}
-                      </span>
+                      <div className="flex items-center gap-1.5">
+                        <span className="px-2 py-0.5 rounded font-mono text-xs font-bold bg-blue-900/60 text-blue-200 border border-blue-700/60" title={`Источник: ${updateCheckResult?.localAppVersion?.fileSource || projectVersion?.fileSource || 'version.json'}`}>
+                          v{updateCheckResult?.localAppVersion?.version || projectVersion?.appVersion || '1.0.1'}
+                        </span>
+                        <span className="px-2 py-0.5 rounded font-mono text-xs bg-[#1b2234] text-blue-300 border border-[#313e5e]">
+                          {projectVersion?.shortSha || (projectVersion?.commit ? projectVersion.commit.slice(0, 7) : 'd766ddd')}
+                        </span>
+                      </div>
                     </div>
 
                     <div className="space-y-1.5 text-xs text-gray-400 font-mono">
                       <div>
+                        <span className="text-gray-500">Версия в файле: </span>
+                        <span className="text-blue-300 font-bold">v{updateCheckResult?.localAppVersion?.version || projectVersion?.appVersion || '1.0.1'}</span>
+                        <span className="text-gray-500 text-[11px] ml-1">({updateCheckResult?.localAppVersion?.fileSource || projectVersion?.fileSource || 'version.json'})</span>
+                      </div>
+                      <div>
                         <span className="text-gray-500">Коммит: </span>
-                        <span className="text-gray-200">{projectVersion?.commit || '4b97814'}</span>
+                        <span className="text-gray-200">{projectVersion?.commit || projectVersion?.shortSha || 'd766ddd'}</span>
                       </div>
                       <div>
                         <span className="text-gray-500">Сообщение: </span>
-                        <span className="text-gray-200">{projectVersion?.commitMessage || 'feat: initialize project source code'}</span>
+                        <span className="text-gray-200">{projectVersion?.commitMessage || 'feat: add GitHub project update mechanism'}</span>
                       </div>
                       {projectVersion?.updatedAt && (
                         <div>
@@ -2483,15 +2510,31 @@ export default function App() {
                         <span className="w-2 h-2 rounded-full bg-purple-400"></span>
                         Последняя версия на GitHub
                       </span>
-                      {updateCheckResult?.latestCommit && (
-                        <span className="px-2 py-0.5 rounded font-mono text-xs bg-purple-950/60 text-purple-300 border border-purple-800/60">
-                          {updateCheckResult.latestCommit.sha.slice(0, 7)}
-                        </span>
-                      )}
+                      <div className="flex items-center gap-1.5">
+                        {updateCheckResult?.remoteAppVersion && (
+                          <span className="px-2 py-0.5 rounded font-mono text-xs font-bold bg-purple-900/60 text-purple-200 border border-purple-700/60" title={`Источник: ${updateCheckResult.remoteAppVersion.fileSource}`}>
+                            v{updateCheckResult.remoteAppVersion.version}
+                          </span>
+                        )}
+                        {updateCheckResult?.latestCommit && (
+                          <span className="px-2 py-0.5 rounded font-mono text-xs bg-purple-950/60 text-purple-300 border border-purple-800/60">
+                            {updateCheckResult.latestCommit.sha.slice(0, 7)}
+                          </span>
+                        )}
+                      </div>
                     </div>
 
                     {updateCheckResult?.latestCommit ? (
                       <div className="space-y-1.5 text-xs text-gray-400 font-mono">
+                        <div>
+                          <span className="text-gray-500">Версия в файле: </span>
+                          <span className="text-purple-300 font-bold">
+                            v{updateCheckResult.remoteAppVersion?.version || updateCheckResult.localAppVersion?.version || '1.0.1'}
+                          </span>
+                          <span className="text-gray-500 text-[11px] ml-1">
+                            ({updateCheckResult.remoteAppVersion?.fileSource || 'version.json'})
+                          </span>
+                        </div>
                         <div>
                           <span className="text-gray-500">Коммит: </span>
                           <span className="text-gray-200">{updateCheckResult.latestCommit.sha}</span>
@@ -2524,6 +2567,55 @@ export default function App() {
                 {/* РЕЗУЛЬТАТ СРАВНЕНИЯ ВЕРСИЙ */}
                 {updateCheckResult && (
                   <div className="space-y-4">
+                    {/* Панель критериев проверки: Файл версии + Diff кода */}
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      {/* Критерий 1: Файл версии */}
+                      <div className={`p-3 rounded-xl border flex items-center justify-between text-xs ${
+                        updateCheckResult.hasVersionDiff 
+                          ? 'bg-amber-950/40 border-amber-600/60 text-amber-200' 
+                          : 'bg-emerald-950/40 border-emerald-600/60 text-emerald-200'
+                      }`}>
+                        <div className="flex items-center gap-2">
+                          <span className="text-base">{updateCheckResult.hasVersionDiff ? '⚠️' : '✓'}</span>
+                          <div>
+                            <span className="font-bold block">Файл версии ({updateCheckResult.localAppVersion?.fileSource || 'version.json'})</span>
+                            <span className="text-[11px] opacity-80">
+                              {updateCheckResult.versionComparisonMessage || `v${updateCheckResult.localAppVersion?.version || '1.0.1'}`}
+                            </span>
+                          </div>
+                        </div>
+                        <span className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold ${
+                          updateCheckResult.hasVersionDiff ? 'bg-amber-900 text-amber-200' : 'bg-emerald-900 text-emerald-200'
+                        }`}>
+                          {updateCheckResult.hasVersionDiff ? 'Новая версия' : 'Актуальна'}
+                        </span>
+                      </div>
+
+                      {/* Критерий 2: Разность кода (Diff) */}
+                      <div className={`p-3 rounded-xl border flex items-center justify-between text-xs ${
+                        updateCheckResult.hasCodeDiff 
+                          ? 'bg-amber-950/40 border-amber-600/60 text-amber-200' 
+                          : 'bg-emerald-950/40 border-emerald-600/60 text-emerald-200'
+                      }`}>
+                        <div className="flex items-center gap-2">
+                          <span className="text-base">{updateCheckResult.hasCodeDiff ? '📝' : '✓'}</span>
+                          <div>
+                            <span className="font-bold block">Состояние кода (Diff файлов)</span>
+                            <span className="text-[11px] opacity-80">
+                              {updateCheckResult.hasCodeDiff 
+                                ? `Изменено файлов: ${updateCheckResult.diffFiles?.length || 0}`
+                                : `Проверено ${updateCheckResult.checkedFilesCount || 0} файлов: идентичны`}
+                            </span>
+                          </div>
+                        </div>
+                        <span className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold ${
+                          updateCheckResult.hasCodeDiff ? 'bg-amber-900 text-amber-200' : 'bg-emerald-900 text-emerald-200'
+                        }`}>
+                          {updateCheckResult.hasCodeDiff ? 'Есть Diff' : 'Совпадает'}
+                        </span>
+                      </div>
+                    </div>
+
                     {/* СЛУЧАЙ 1: Версии совпадают */}
                     {updateCheckResult.upToDate ? (
                       <div className="p-5 bg-[#0e1c15] border-2 border-emerald-500/50 rounded-2xl space-y-3">
@@ -2536,7 +2628,7 @@ export default function App() {
                               Версии совпадают! У вас установлена самая свежая версия проекта.
                             </h3>
                             <p className="text-xs text-emerald-200/80 mt-0.5">
-                              Локальный код соответствует последнему коммиту <code className="font-mono text-emerald-300 bg-emerald-950/80 px-1 py-0.5 rounded">{updateCheckResult.latestCommit.sha.slice(0, 7)}</code> в ветке {updateCheckResult.branch}.
+                              Проверено по файлу версии (<code className="font-mono text-emerald-300 bg-emerald-950/80 px-1 py-0.5 rounded">v{updateCheckResult.localAppVersion?.version || '1.0.1'}</code>) и по diff файлов {updateCheckResult.checkedFilesCount ? `(${updateCheckResult.checkedFilesCount} файлов)` : ''}: различий в коде не обнаружено. Локальный проект полностью актуален.
                             </p>
                           </div>
                         </div>
@@ -2565,17 +2657,47 @@ export default function App() {
                           </div>
                           <div className="flex-1">
                             <h3 className="text-base font-bold text-amber-300 flex items-center gap-2">
-                              Найдена более свежая версия проекта на GitHub!
-                              <span className="text-xs font-mono px-2 py-0.5 rounded-full bg-amber-950 text-amber-200 border border-amber-700">
-                                +{updateCheckResult.commitsAhead?.length || 1} новых коммитов
-                              </span>
+                              Доступно обновление проекта с GitHub!
+                              {updateCheckResult.hasVersionDiff && updateCheckResult.remoteAppVersion && (
+                                <span className="text-xs font-mono px-2 py-0.5 rounded-full bg-amber-950 text-amber-200 border border-amber-700">
+                                  v{updateCheckResult.remoteAppVersion.version}
+                                </span>
+                              )}
+                              {updateCheckResult.diffFiles && updateCheckResult.diffFiles.length > 0 && (
+                                <span className="text-xs font-mono px-2 py-0.5 rounded-full bg-amber-950 text-amber-200 border border-amber-700">
+                                  {updateCheckResult.diffFiles.length} измененных файлов
+                                </span>
+                              )}
                             </h3>
                             <p className="text-xs text-amber-200/90 mt-1">
-                              На GitHub найдена более свежая версия проекта. Ниже приведены сообщения git и список изменений. 
-                              Вы можете утвердить обновление для автоматической перезаписи и обновления файлов или отменить операцию.
+                              {updateCheckResult.hasVersionDiff 
+                                ? updateCheckResult.versionComparisonMessage 
+                                : 'В репозитории GitHub найдены обновления кода по сравнению с локальной установкой.'}
                             </p>
                           </div>
                         </div>
+
+                        {/* Список файлов с различиями в коде (diff) */}
+                        {updateCheckResult.diffFiles && updateCheckResult.diffFiles.length > 0 && (
+                          <div className="space-y-1.5">
+                            <h4 className="text-xs font-bold text-amber-300 flex items-center gap-1.5 uppercase tracking-wider">
+                              <span>Различия в коде (Diff файлов):</span>
+                              <span className="text-gray-400 font-normal">({updateCheckResult.diffFiles.length} файлов)</span>
+                            </h4>
+                            <div className="max-h-36 overflow-y-auto space-y-1 bg-[#120d05] border border-amber-900/50 p-2.5 rounded-xl font-mono text-xs">
+                              {updateCheckResult.diffFiles.map((df, i) => (
+                                <div key={i} className="flex items-center justify-between text-[11px] py-0.5 px-1.5 rounded hover:bg-amber-950/40">
+                                  <span className="text-gray-200">{df.path}</span>
+                                  <span className={`px-1.5 py-0.2 rounded text-[10px] ${
+                                    df.status === 'added' ? 'bg-emerald-950 text-emerald-300 border border-emerald-800' : 'bg-amber-950 text-amber-300 border border-amber-800'
+                                  }`}>
+                                    {df.status === 'added' ? 'новый' : 'изменен'}
+                                  </span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
 
                         {/* Сообщения Git-коммитов */}
                         <div className="space-y-2">
@@ -2678,7 +2800,7 @@ export default function App() {
                     type="text"
                     value={gitHubRepoInput}
                     onChange={(e) => setGitHubRepoInput(e.target.value)}
-                    placeholder="owner/repo (напр. gregpost/pcbdoc-ai-validator или полная ссылка на GitHub)"
+                    placeholder="owner/repo (напр. gregpost/pcb-ai-validator или полная ссылка на GitHub)"
                     className="w-full pl-9 pr-3 py-2.5 bg-[#0e1017] border border-[#2d364b] focus:border-blue-500 rounded-xl text-sm text-white placeholder-gray-500 outline-none font-mono transition-colors"
                   />
                 </div>
@@ -2755,19 +2877,31 @@ export default function App() {
               <div className="flex flex-wrap items-center gap-2 pt-0.5">
                 <span className="text-[11px] text-gray-400 font-bold mr-0.5">Пресеты:</span>
                 
-                {/* Основной пресет gregpost/pcbdoc-ai-validator */}
+                {/* Основной пресет gregpost/pcb-ai-validator */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setGitHubRepoInput('gregpost/pcb-ai-validator');
+                    connectGitHubRepo('gregpost/pcb-ai-validator');
+                  }}
+                  className="px-3 py-1 bg-gradient-to-r from-blue-900 via-indigo-900 to-blue-950 hover:from-blue-800 hover:to-indigo-800 text-blue-100 hover:text-white border-2 border-blue-400/80 rounded-lg text-xs font-mono font-bold transition-all shadow-md shadow-blue-950/60 flex items-center gap-1.5 active:scale-95 ring-2 ring-blue-500/30"
+                  title="Основной репозиторий проекта"
+                >
+                  <span className="text-amber-300 font-extrabold text-sm leading-none">★</span>
+                  <span>gregpost/pcb-ai-validator</span>
+                  <span className="text-[9px] px-1.5 py-0.2 rounded bg-blue-500 text-white font-sans uppercase font-black">Основной</span>
+                </button>
+
                 <button
                   type="button"
                   onClick={() => {
                     setGitHubRepoInput('gregpost/pcbdoc-ai-validator');
                     connectGitHubRepo('gregpost/pcbdoc-ai-validator');
                   }}
-                  className="px-3 py-1 bg-gradient-to-r from-blue-900 via-indigo-900 to-blue-950 hover:from-blue-800 hover:to-indigo-800 text-blue-100 hover:text-white border-2 border-blue-400/80 rounded-lg text-xs font-mono font-bold transition-all shadow-md shadow-blue-950/60 flex items-center gap-1.5 active:scale-95 ring-2 ring-blue-500/30"
-                  title="Основной репозиторий проекта с готовыми даташитами и схемами"
+                  className="px-2.5 py-1 bg-[#1a1f2c] hover:bg-[#252c3e] hover:text-blue-300 border border-[#2b354b] rounded-lg text-xs text-gray-300 font-mono transition-colors"
+                  title="Репозиторий с даташитами и схемами плат"
                 >
-                  <span className="text-amber-300 font-extrabold text-sm leading-none">★</span>
-                  <span>gregpost/pcbdoc-ai-validator</span>
-                  <span className="text-[9px] px-1.5 py-0.2 rounded bg-blue-500 text-white font-sans uppercase font-black">Основной</span>
+                  gregpost/pcbdoc-ai-validator
                 </button>
 
                 {[
@@ -3029,7 +3163,7 @@ export default function App() {
                   </svg>
                   <h3 className="text-base font-semibold text-gray-300">Подключите GitHub репозиторий</h3>
                   <p className="text-xs text-gray-500 max-w-md">
-                    Введите имя репозитория (например: <code className="text-blue-400">gregpost/pcbdoc-ai-validator</code>) и нажмите "Найти файлы" для просмотра доступных плат, схем и документации.
+                    Введите имя репозитория (например: <code className="text-blue-400">gregpost/pcb-ai-validator</code>) и нажмите "Найти файлы" для просмотра доступных плат, схем и документации.
                   </p>
                 </div>
               ) : (

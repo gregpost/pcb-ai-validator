@@ -4,6 +4,7 @@
 import express from 'express'; // express
 import { spawn, execSync } from 'child_process'; // spawn, execSync
 import fs from 'fs'; // fs
+import crypto from 'crypto'; // crypto
 import path from 'path'; // path
 import { fileURLToPath } from 'url'; // fileURLToPath
 import { createServer as createViteServer } from 'vite'; // createServer
@@ -779,25 +780,118 @@ async function startServer() {
 
   // --- Эндпоинты обновления исходного кода проекта по GitHub ---
   const PROJECT_VERSION_FILE = path.join(__dirname, '.project_version.json');
+  const SPECIAL_VERSION_JSON = path.join(__dirname, 'version.json');
+  const SPECIAL_VERSION_TXT = path.join(__dirname, 'VERSION');
+
+  interface AppVersionDetails {
+    version: string;
+    build?: number;
+    releaseName?: string;
+    description?: string;
+    fileSource: string;
+  }
+
+  // Чтение версии из специального файла (version.json или VERSION)
+  function getLocalSpecialVersion(): AppVersionDetails {
+    try {
+      if (fs.existsSync(SPECIAL_VERSION_JSON)) {
+        const data = JSON.parse(fs.readFileSync(SPECIAL_VERSION_JSON, 'utf8'));
+        if (data && data.version) {
+          return {
+            version: String(data.version).trim(),
+            build: typeof data.build === 'number' ? data.build : undefined,
+            releaseName: data.releaseName || '',
+            description: data.description || '',
+            fileSource: 'version.json'
+          };
+        }
+      }
+    } catch (e) {
+      console.warn('Failed reading version.json:', e);
+    }
+
+    try {
+      if (fs.existsSync(SPECIAL_VERSION_TXT)) {
+        const txt = fs.readFileSync(SPECIAL_VERSION_TXT, 'utf8').trim();
+        if (txt) {
+          return {
+            version: txt,
+            fileSource: 'VERSION'
+          };
+        }
+      }
+    } catch (e) {
+      console.warn('Failed reading VERSION:', e);
+    }
+
+    return {
+      version: '1.0.1',
+      build: 1,
+      fileSource: 'default'
+    };
+  }
+
+  // Парсинг и сравнение семантических версий (semver)
+  function parseSemVer(v: string): [number, number, number, number] {
+    if (!v) return [0, 0, 0, 0];
+    const cleaned = String(v).replace(/^v/i, '').trim();
+    const parts = cleaned.split(/[\.-]/).map(p => parseInt(p, 10) || 0);
+    return [parts[0] || 0, parts[1] || 0, parts[2] || 0, parts[3] || 0];
+  }
+
+  function compareSemVer(v1: string, v2: string): number {
+    const p1 = parseSemVer(v1);
+    const p2 = parseSemVer(v2);
+    for (let i = 0; i < 4; i++) {
+      if (p1[i] > p2[i]) return 1;
+      if (p1[i] < p2[i]) return -1;
+    }
+    return 0;
+  }
 
   function getLocalProjectVersion() {
+    const special = getLocalSpecialVersion();
+    let base = {
+      repo: 'gregpost/pcb-ai-validator',
+      branch: 'main',
+      commitSha: 'd766ddd00f417ddb51ed2120ec302ccdd7aedaab',
+      shortSha: 'd766ddd',
+      commitMessage: 'feat: add GitHub project update mechanism',
+      author: 'Gregory Postolsky',
+      commitDate: '2026-11-10T03:50:06Z',
+      syncedAt: '2026-11-10T03:50:06Z'
+    };
     try {
       if (fs.existsSync(PROJECT_VERSION_FILE)) {
-        return JSON.parse(fs.readFileSync(PROJECT_VERSION_FILE, 'utf8'));
+        base = { ...base, ...JSON.parse(fs.readFileSync(PROJECT_VERSION_FILE, 'utf8')) };
       }
     } catch (e) {
       console.error('Failed reading .project_version.json:', e);
     }
     return {
-      repo: 'gregpost/pcbdoc-ai-validator',
-      branch: 'main',
-      commitSha: '4b97814af416200b17ce5c4f7602f124f0bb9c34',
-      shortSha: '4b97814',
-      commitMessage: 'feat: initialize project source code',
-      author: 'gregpost',
-      commitDate: '2026-03-26T18:45:43Z',
-      syncedAt: '2026-03-26T18:45:43Z'
+      ...base,
+      appVersion: special.version,
+      build: special.build,
+      releaseName: special.releaseName,
+      fileSource: special.fileSource
     };
+  }
+
+  // Расчет Git Blob SHA файла (sha1("blob <size>\0<content>"))
+  function getGitBlobSha(filePath: string): string | null {
+    try {
+      if (!fs.existsSync(filePath)) return null;
+      const stat = fs.statSync(filePath);
+      if (stat.isDirectory()) return null;
+      const content = fs.readFileSync(filePath);
+      const header = `blob ${content.length}\0`;
+      const hash = crypto.createHash('sha1');
+      hash.update(header);
+      hash.update(content);
+      return hash.digest('hex');
+    } catch {
+      return null;
+    }
   }
 
   // Получение текущей локальной версии проекта
@@ -805,16 +899,16 @@ async function startServer() {
     res.json(getLocalProjectVersion());
   });
 
-  // Проверка наличия обновлений проекта в GitHub
+  // Проверка наличия обновлений проекта в GitHub (по специальному файлу версии + по diff кода)
   app.post('/api/project/check-update', async (req, res) => {
     try {
-      const rawRepo = req.body.repoUrl || req.body.repo || 'gregpost/pcbdoc-ai-validator';
+      const rawRepo = req.body.repoUrl || req.body.repo || 'gregpost/pcb-ai-validator';
       const branchReq = (req.body.branch || 'main').trim();
       const token = req.body.token;
 
       const parsed = parseGitHubRepo(rawRepo);
       if (!parsed) {
-        return res.status(400).json({ error: 'Неверный адрес репозитория. Пример: gregpost/pcbdoc-ai-validator' });
+        return res.status(400).json({ error: 'Неверный адрес репозитория. Пример: gregpost/pcb-ai-validator' });
       }
 
       const branch = parsed.branch || branchReq || 'main';
@@ -849,14 +943,199 @@ async function startServer() {
       const localSha = (localVersion.commitSha || '').trim().toLowerCase();
       const remoteSha = (latestSha || '').trim().toLowerCase();
 
-      // Проверяем совпадение версий
-      const isUpToDate = Boolean(localSha && remoteSha && (localSha === remoteSha || localSha.startsWith(remoteSha) || remoteSha.startsWith(localSha)));
+      // --- ПРОВЕРКА 1: ВЕРСИЯ ИЗ СПЕЦИАЛЬНОГО ФАЙЛА (version.json / VERSION / package.json) ---
+      let remoteAppVersion: { version: string; build?: number; releaseName?: string; fileSource: string } | null = null;
+
+      // 1.1 Пытаемся получить version.json с GitHub
+      try {
+        const verJsonRes = await fetch(
+          `https://api.github.com/repos/${parsed.owner}/${parsed.repo}/contents/version.json?ref=${encodeURIComponent(branch)}`,
+          { headers }
+        );
+        if (verJsonRes.ok) {
+          const vData: any = await verJsonRes.json();
+          if (vData.content) {
+            const rawStr = Buffer.from(vData.content, 'base64').toString('utf8');
+            const parsedVer = JSON.parse(rawStr);
+            if (parsedVer && parsedVer.version) {
+              remoteAppVersion = {
+                version: String(parsedVer.version).trim(),
+                build: typeof parsedVer.build === 'number' ? parsedVer.build : undefined,
+                releaseName: parsedVer.releaseName || '',
+                fileSource: 'version.json'
+              };
+            }
+          }
+        }
+      } catch (vErr) {
+        console.warn('Failed fetching remote version.json:', vErr);
+      }
+
+      // 1.2 Если version.json нет на GitHub, проверяем файл VERSION
+      if (!remoteAppVersion) {
+        try {
+          const verTxtRes = await fetch(
+            `https://api.github.com/repos/${parsed.owner}/${parsed.repo}/contents/VERSION?ref=${encodeURIComponent(branch)}`,
+            { headers }
+          );
+          if (verTxtRes.ok) {
+            const vData: any = await verTxtRes.json();
+            if (vData.content) {
+              const rawStr = Buffer.from(vData.content, 'base64').toString('utf8').trim();
+              if (rawStr) {
+                remoteAppVersion = {
+                  version: rawStr,
+                  fileSource: 'VERSION'
+                };
+              }
+            }
+          }
+        } catch {}
+      }
+
+      // 1.3 Если нет ни version.json, ни VERSION, проверяем package.json
+      if (!remoteAppVersion) {
+        try {
+          const pkgRes = await fetch(
+            `https://api.github.com/repos/${parsed.owner}/${parsed.repo}/contents/package.json?ref=${encodeURIComponent(branch)}`,
+            { headers }
+          );
+          if (pkgRes.ok) {
+            const vData: any = await pkgRes.json();
+            if (vData.content) {
+              const rawStr = Buffer.from(vData.content, 'base64').toString('utf8');
+              const parsedPkg = JSON.parse(rawStr);
+              if (parsedPkg && parsedPkg.version) {
+                remoteAppVersion = {
+                  version: String(parsedPkg.version).trim(),
+                  fileSource: 'package.json'
+                };
+              }
+            }
+          }
+        } catch {}
+      }
+
+      const localAppVersion = getLocalSpecialVersion();
+      let hasVersionDiff = false;
+      let versionDiffStatus: 'newer' | 'older' | 'same' = 'same';
+      let versionComparisonMessage = '';
+
+      if (remoteAppVersion && remoteAppVersion.version) {
+        const cmp = compareSemVer(remoteAppVersion.version, localAppVersion.version);
+        if (cmp > 0) {
+          hasVersionDiff = true;
+          versionDiffStatus = 'newer';
+          versionComparisonMessage = `На GitHub найдена новая версия в ${remoteAppVersion.fileSource}: v${remoteAppVersion.version} (локально: v${localAppVersion.version})`;
+        } else if (cmp < 0) {
+          versionDiffStatus = 'older';
+          versionComparisonMessage = `Локальная версия (v${localAppVersion.version}) новее, чем в репозитории (v${remoteAppVersion.version})`;
+        } else {
+          // Версии равны, проверяем билд
+          if (typeof remoteAppVersion.build === 'number' && typeof localAppVersion.build === 'number' && remoteAppVersion.build > localAppVersion.build) {
+            hasVersionDiff = true;
+            versionDiffStatus = 'newer';
+            versionComparisonMessage = `На GitHub найден более свежий билд #${remoteAppVersion.build} (локально: #${localAppVersion.build})`;
+          } else {
+            versionDiffStatus = 'same';
+            versionComparisonMessage = `Версии в ${localAppVersion.fileSource} совпадают: v${localAppVersion.version}`;
+          }
+        }
+      } else {
+        versionComparisonMessage = `Файл версии на GitHub не найден, используется текущая версия v${localAppVersion.version}`;
+      }
+
+      // --- ПРОВЕРКА 2: ПО КОДУ (DIFF) ЧЕРЕЗ GIT BLOB SHA ---
+      // Позволяет определить, есть ли реальные различия в содержимом файлов проекта
+      let hasCodeDiff = false;
+      const diffFiles: Array<{ path: string; status: 'modified' | 'added' | 'deleted' }> = [];
+      let checkedTreeCount = 0;
+
+      const treeSha = commitData.commit?.tree?.sha || latestSha;
+      if (treeSha) {
+        try {
+          const treeRes = await fetch(
+            `https://api.github.com/repos/${parsed.owner}/${parsed.repo}/git/trees/${encodeURIComponent(treeSha)}?recursive=1`,
+            { headers }
+          );
+          if (treeRes.ok) {
+            const treeData: any = await treeRes.json();
+            const treeItems: any[] = treeData.tree || [];
+
+            const ignoredPaths = [
+              '.project_version.json',
+              'version.json',
+              'VERSION',
+              'node_modules',
+              '.git',
+              'dist',
+              'tmp',
+              '.cache',
+              '.env',
+              '.DS_Store'
+            ];
+
+            for (const item of treeItems) {
+              if (item.type !== 'blob') continue;
+              const filePath = item.path;
+              if (ignoredPaths.some(ig => filePath === ig || filePath.startsWith(ig + '/'))) {
+                continue;
+              }
+
+              checkedTreeCount++;
+              const localFilePath = path.join(__dirname, filePath);
+              const localBlobSha = getGitBlobSha(localFilePath);
+
+              if (localBlobSha === null) {
+                diffFiles.push({ path: filePath, status: 'added' });
+              } else if (localBlobSha !== item.sha) {
+                diffFiles.push({ path: filePath, status: 'modified' });
+              }
+            }
+          }
+        } catch (treeErr) {
+          console.warn('Failed tree diff check, falling back to commit sha check:', treeErr);
+        }
+      }
+
+      if (checkedTreeCount > 0) {
+        hasCodeDiff = diffFiles.length > 0;
+      } else {
+        hasCodeDiff = !Boolean(localSha && remoteSha && (localSha === remoteSha || localSha.startsWith(remoteSha) || remoteSha.startsWith(localSha)));
+      }
+
+      // --- ОБЩИЙ РЕЗУЛЬТАТ АКТУАЛЬНОСТИ ПРОЕКТА ---
+      // Проект считается актуальным ТОЛЬКО если:
+      // 1. Нет более новой версии в специальном файле версии (hasVersionDiff === false)
+      // 2. Нет различий в коде файлов (hasCodeDiff === false)
+      const isUpToDate = !hasVersionDiff && !hasCodeDiff;
+
+      // Если код идентичен и версия актуальна, автоматически синхронизируем локальный .project_version.json
+      let currentVersion = localVersion;
+      if (isUpToDate) {
+        currentVersion = {
+          repo: `${parsed.owner}/${parsed.repo}`,
+          branch,
+          commitSha: latestSha,
+          shortSha: latestCommit.shortSha,
+          commitMessage: latestCommit.message,
+          author: latestCommit.author,
+          commitDate: latestCommit.date,
+          syncedAt: new Date().toISOString(),
+          appVersion: localAppVersion.version,
+          build: localAppVersion.build,
+          fileSource: localAppVersion.fileSource
+        };
+        try {
+          fs.writeFileSync(PROJECT_VERSION_FILE, JSON.stringify(currentVersion, null, 2), 'utf8');
+        } catch {}
+      }
 
       let commitsAhead: any[] = [];
       let changedFiles: any[] = [];
 
-      // Если есть отличия, запрашиваем сравнение коммитов
-      if (!isUpToDate && localVersion?.commitSha) {
+      // Если есть реальные отличия в коде, запрашиваем сравнение коммитов
+      if (!isUpToDate && localVersion?.commitSha && localVersion.commitSha !== latestSha) {
         try {
           const compareRes = await fetch(`https://api.github.com/repos/${parsed.owner}/${parsed.repo}/compare/${localVersion.commitSha}...${latestSha}`, { headers });
           if (compareRes.ok) {
@@ -882,7 +1161,7 @@ async function startServer() {
         }
       }
 
-      // Если список коммитов пуст, но версии отличаются, выводим хотя бы последний коммит
+      // Если список коммитов пуст, но версии отличаются, выводим последний коммит
       if (!isUpToDate && commitsAhead.length === 0) {
         commitsAhead = [{
           sha: latestCommit.shortSha,
@@ -896,7 +1175,15 @@ async function startServer() {
 
       res.json({
         upToDate: isUpToDate,
-        currentVersion: localVersion,
+        hasVersionDiff,
+        versionDiffStatus,
+        versionComparisonMessage,
+        localAppVersion,
+        remoteAppVersion,
+        hasCodeDiff,
+        diffFiles: diffFiles.slice(0, 50),
+        checkedFilesCount: checkedTreeCount,
+        currentVersion,
         latestCommit,
         commitsAhead,
         changedFiles,
@@ -911,7 +1198,7 @@ async function startServer() {
   // Применение обновления проекта из GitHub
   app.post('/api/project/apply-update', async (req, res) => {
     try {
-      const rawRepo = req.body.repoUrl || req.body.repo || 'gregpost/pcbdoc-ai-validator';
+      const rawRepo = req.body.repoUrl || req.body.repo || 'gregpost/pcb-ai-validator';
       const branchReq = (req.body.branch || 'main').trim();
       const token = req.body.token;
       const targetSha = req.body.commitSha;
@@ -943,7 +1230,29 @@ async function startServer() {
 
       const updatedFiles: string[] = [];
 
-      // 1. Обновляем директории со скриптами Python
+      // 1. Полное обновление файлов проекта (если репозиторий содержит src/)
+      if (fs.existsSync(path.join(tempExtractDir, 'src'))) {
+        fs.cpSync(path.join(tempExtractDir, 'src'), path.join(__dirname, 'src'), { recursive: true, force: true });
+        updatedFiles.push('src/ (исходный код приложения)');
+      }
+      if (fs.existsSync(path.join(tempExtractDir, 'server.ts'))) {
+        fs.copyFileSync(path.join(tempExtractDir, 'server.ts'), path.join(__dirname, 'server.ts'));
+        updatedFiles.push('server.ts');
+      }
+      if (fs.existsSync(path.join(tempExtractDir, 'package.json'))) {
+        fs.copyFileSync(path.join(tempExtractDir, 'package.json'), path.join(__dirname, 'package.json'));
+        updatedFiles.push('package.json');
+      }
+      if (fs.existsSync(path.join(tempExtractDir, 'version.json'))) {
+        fs.copyFileSync(path.join(tempExtractDir, 'version.json'), path.join(__dirname, 'version.json'));
+        updatedFiles.push('version.json (файл версии)');
+      }
+      if (fs.existsSync(path.join(tempExtractDir, 'VERSION'))) {
+        fs.copyFileSync(path.join(tempExtractDir, 'VERSION'), path.join(__dirname, 'VERSION'));
+        updatedFiles.push('VERSION');
+      }
+
+      // 2. Обновляем директории со скриптами Python (если это модульный upstream репозиторий)
       const pythonTargetDir = path.join(__dirname, 'src', 'python');
       fs.mkdirSync(pythonTargetDir, { recursive: true });
 
