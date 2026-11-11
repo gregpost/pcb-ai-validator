@@ -183,6 +183,7 @@ export default function App() {
   const [pinsErrorMessage, setPinsErrorMessage] = useState('');
   const [pcbCompError, setPcbCompError] = useState(false);
   const [pcbCompErrorMessage, setPcbCompErrorMessage] = useState('');
+  const [showRequirementsHelp, setShowRequirementsHelp] = useState(false);
   const [engine, setEngine] = useState<'typescript' | 'python'>(() => {
     return (localStorage.getItem('pcb_engine') as 'typescript' | 'python') || 'typescript';
   });
@@ -955,6 +956,13 @@ export default function App() {
   const pdfCount = files.filter(f => f.type === 'pdf').length;
   const pinsCount = files.filter(f => f.type === 'txt').length;
   const pcbCount = files.filter(f => f.type === 'pcbdoc' || f.type === 'pcbsch').length;
+  const trimmedTarget = targetComponent.trim();
+  const hasMatchingPdf = files.some(
+    f => f.type === 'pdf' && trimmedTarget && f.name.replace(/\.pdf$/i, '').trim().toLowerCase() === trimmedTarget.toLowerCase()
+  );
+  const hasMatchingPins = files.some(
+    f => f.type === 'txt' && trimmedTarget && f.name.replace(/\.txt$/i, '').trim().toLowerCase() === trimmedTarget.toLowerCase()
+  );
 
   const runPipeline = async () => {
     const trimmedTarget = targetComponent.trim();
@@ -1254,7 +1262,13 @@ export default function App() {
                 onClick={runPipeline} 
                 disabled={isRunning || pcbCount === 0} 
                 className="w-full py-3 bg-[#2563eb] hover:bg-[#1d4ed8] text-white rounded-lg font-bold text-sm transition-all shadow-lg shadow-blue-900/20 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2"
-                title={pcbCount === 0 ? "Для запуска пайплайна загрузите хотя бы один файл .PcbDoc" : undefined}
+                title={
+                  isRunning
+                    ? "Кнопка неактивна: пайплайн уже запущен и выполняется"
+                    : pcbCount === 0
+                      ? "Кнопка неактивна: не загружен файл печатной платы (.PcbDoc или .PcbSch). Загрузите файл во вкладке «Файлы»"
+                      : "Запустить пайплайн валидации проекта"
+                }
               >
                 <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
                 Запустить пайплайн
@@ -1269,6 +1283,190 @@ export default function App() {
                   <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/></svg>
                   Прервать пайплайн
                 </button>
+              )}
+            </div>
+
+            {/* Карточка-пояснение: Почему кнопка «Запустить пайплайн» неактивна */}
+            {(isRunning || pcbCount === 0) && (
+              <div className={`p-3 rounded-xl border text-xs space-y-2.5 transition-all shadow-md ${
+                isRunning 
+                  ? 'bg-[#0f1f38] border-blue-500/60 text-blue-200' 
+                  : 'bg-[#291808] border-amber-500/70 text-amber-200 shadow-amber-950/30'
+              }`}>
+                <div className="flex items-start gap-2.5">
+                  <span className="text-base flex-shrink-0 mt-0.5">
+                    {isRunning ? '⏳' : '⚠️'}
+                  </span>
+                  <div className="flex-1">
+                    <div className="font-bold text-xs flex items-center justify-between gap-1">
+                      <span className="text-white">Кнопка «Запустить пайплайн» неактивна</span>
+                      <span className={`text-[9px] font-mono uppercase px-1.5 py-0.5 rounded border font-bold ${
+                        isRunning ? 'bg-blue-900 text-blue-200 border-blue-600' : 'bg-amber-900 text-amber-200 border-amber-600'
+                      }`}>
+                        {isRunning ? 'Запущен' : 'Блокировка'}
+                      </span>
+                    </div>
+
+                    <div className="text-[11px] mt-1.5 leading-relaxed text-gray-200">
+                      {isRunning ? (
+                        <p>
+                          <span className="font-semibold text-white">Причина:</span> пайплайн анализа уже выполняется в данный момент (статус: <code className="font-mono text-amber-300 bg-black/50 px-1 py-0.5 rounded font-bold">{status}</code>). Повторный запуск заблокирован во избежание конфликтов перезаписи файлов.
+                        </p>
+                      ) : (
+                        <div className="space-y-1">
+                          <p>
+                            <span className="font-semibold text-amber-300">Причина:</span> в проекте <span className="underline decoration-amber-400 font-bold text-white">отсутствует файл печатной платы</span> (<code className="font-mono text-amber-300 bg-black/50 px-1 py-0.5 rounded font-bold">.PcbDoc</code> или <code className="font-mono text-amber-300 bg-black/50 px-1 py-0.5 rounded font-bold">.PcbSch</code>).
+                          </p>
+                          <p className="text-[10px] text-amber-200/80">
+                            Анализатор валидирует трассировку и цепи реальной платы Altium Designer, поэтому без файла платы запуск невозможен.
+                          </p>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Действие для разблокировки кнопки */}
+                {pcbCount === 0 && !isRunning && (
+                  <div className="pt-2 border-t border-amber-800/50 space-y-1.5">
+                    <button
+                      type="button"
+                      onClick={() => setSidebarTab('files')}
+                      className="w-full py-2 px-3 bg-gradient-to-r from-amber-600 to-amber-700 hover:from-amber-500 hover:to-amber-600 text-white rounded-lg text-xs font-bold transition-all shadow-md shadow-amber-950/50 flex items-center justify-center gap-1.5 active:scale-95 border border-amber-400/50"
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>
+                      <span>Загрузить .PcbDoc во вкладке «Файлы» ➔</span>
+                    </button>
+                    <div className="text-[10px] text-gray-400 text-center">
+                      Либо синхронизируйте репозиторий через «Обновить код из GitHub»
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Интерактивный чек-лист готовности к запуску пайплайна */}
+            <div className="bg-[#141414] border border-[#262626] rounded-xl overflow-hidden text-xs">
+              <button
+                type="button"
+                onClick={() => setShowRequirementsHelp(prev => !prev)}
+                className="w-full p-2.5 flex items-center justify-between text-gray-300 hover:text-white transition-colors bg-[#181818]"
+              >
+                <span className="font-bold text-[11px] flex items-center gap-1.5">
+                  <span>📋</span>
+                  <span>Чек-лист готовности к запуску:</span>
+                </span>
+                <div className="flex items-center gap-2 font-mono text-[10px]">
+                  <span className={`px-1.5 py-0.5 rounded ${
+                    pcbCount > 0 && trimmedTarget && hasMatchingPdf && hasMatchingPins
+                      ? 'bg-emerald-950 text-emerald-300 border border-emerald-800'
+                      : 'bg-amber-950 text-amber-300 border border-amber-800'
+                  }`}>
+                    {pcbCount > 0 && trimmedTarget && hasMatchingPdf && hasMatchingPins ? 'Готов к запуску' : 'Не все условия'}
+                  </span>
+                  <span>{showRequirementsHelp ? '▲' : '▼'}</span>
+                </div>
+              </button>
+
+              {showRequirementsHelp && (
+                <div className="p-3 space-y-2 border-t border-[#262626] bg-[#121212] text-[11px]">
+                  <p className="text-gray-400 text-[10px]">
+                    Для полноценного запуска и прохождения всех этапов анализа требуются следующие данные:
+                  </p>
+
+                  <div className="space-y-1.5">
+                    {/* Требование 1: Файл платы */}
+                    <div className={`p-2 rounded-lg border flex items-center justify-between ${
+                      pcbCount > 0 ? 'bg-emerald-950/30 border-emerald-800/60 text-emerald-200' : 'bg-red-950/30 border-red-800/60 text-red-200'
+                    }`}>
+                      <div className="flex items-center gap-2">
+                        <span>{pcbCount > 0 ? '✓' : '✕'}</span>
+                        <div>
+                          <div className="font-bold">1. Файл платы (.PcbDoc или .PcbSch)</div>
+                          <div className="text-[10px] opacity-75">
+                            {pcbCount > 0 ? `Загружено файлов: ${pcbCount}` : 'Обязательно для разблокировки кнопки'}
+                          </div>
+                        </div>
+                      </div>
+                      {pcbCount === 0 && (
+                        <button
+                          type="button"
+                          onClick={() => setSidebarTab('files')}
+                          className="px-2 py-0.5 rounded bg-red-900/60 hover:bg-red-800 text-white text-[10px] font-bold"
+                        >
+                          Загрузить
+                        </button>
+                      )}
+                    </div>
+
+                    {/* Требование 2: Целевой компонент */}
+                    <div className={`p-2 rounded-lg border flex items-center justify-between ${
+                      trimmedTarget ? 'bg-emerald-950/30 border-emerald-800/60 text-emerald-200' : 'bg-amber-950/30 border-amber-800/60 text-amber-200'
+                    }`}>
+                      <div className="flex items-center gap-2">
+                        <span>{trimmedTarget ? '✓' : '✕'}</span>
+                        <div>
+                          <div className="font-bold">2. Целевой компонент (TARGET_COMPONENT)</div>
+                          <div className="text-[10px] opacity-75">
+                            {trimmedTarget ? `Указан: ${trimmedTarget}` : 'Введите имя чипа в поле ниже'}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Требование 3: PDF даташит */}
+                    <div className={`p-2 rounded-lg border flex items-center justify-between ${
+                      hasMatchingPdf ? 'bg-emerald-950/30 border-emerald-800/60 text-emerald-200' : 'bg-amber-950/30 border-amber-800/60 text-amber-200'
+                    }`}>
+                      <div className="flex items-center gap-2">
+                        <span>{hasMatchingPdf ? '✓' : '✕'}</span>
+                        <div>
+                          <div className="font-bold">3. PDF даташит компонента</div>
+                          <div className="text-[10px] opacity-75">
+                            {hasMatchingPdf 
+                              ? `Файл ${trimmedTarget}.pdf найден` 
+                              : `Требуется файл «${trimmedTarget || 'Компонент'}.pdf» в resources/datasheets/`}
+                          </div>
+                        </div>
+                      </div>
+                      {!hasMatchingPdf && (
+                        <button
+                          type="button"
+                          onClick={() => setSidebarTab('files')}
+                          className="px-2 py-0.5 rounded bg-amber-900/60 hover:bg-amber-800 text-white text-[10px] font-bold"
+                        >
+                          Загрузить
+                        </button>
+                      )}
+                    </div>
+
+                    {/* Требование 4: TXT распиновка */}
+                    <div className={`p-2 rounded-lg border flex items-center justify-between ${
+                      hasMatchingPins ? 'bg-emerald-950/30 border-emerald-800/60 text-emerald-200' : 'bg-amber-950/30 border-amber-800/60 text-amber-200'
+                    }`}>
+                      <div className="flex items-center gap-2">
+                        <span>{hasMatchingPins ? '✓' : '✕'}</span>
+                        <div>
+                          <div className="font-bold">4. TXT распиновка (ножки)</div>
+                          <div className="text-[10px] opacity-75">
+                            {hasMatchingPins 
+                              ? `Файл ${trimmedTarget}.txt найден` 
+                              : `Требуется файл «${trimmedTarget || 'Компонент'}.txt» в resources/pins/`}
+                          </div>
+                        </div>
+                      </div>
+                      {!hasMatchingPins && (
+                        <button
+                          type="button"
+                          onClick={() => setSidebarTab('files')}
+                          className="px-2 py-0.5 rounded bg-amber-900/60 hover:bg-amber-800 text-white text-[10px] font-bold"
+                        >
+                          Загрузить
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </div>
               )}
             </div>
 
