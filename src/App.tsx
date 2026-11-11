@@ -73,6 +73,7 @@ export interface ProjectVersionInfo {
 
 export interface ProjectUpdateCheckResult {
   upToDate: boolean;
+  actionType?: 'update' | 'rollback' | 'none';
   hasVersionDiff?: boolean;
   versionDiffStatus?: 'newer' | 'older' | 'same';
   versionComparisonMessage?: string;
@@ -315,9 +316,11 @@ export default function App() {
     }
   };
 
-  // Применение обновления проекта
+  // Применение обновления или отката проекта
   const applyProjectUpdate = async () => {
     if (!updateCheckResult?.latestCommit?.sha) return;
+
+    const isRollback = updateCheckResult.actionType === 'rollback' || updateCheckResult.versionDiffStatus === 'older';
 
     setIsApplyingUpdate(true);
     setUpdateError('');
@@ -331,29 +334,31 @@ export default function App() {
           repo: updateCheckResult.repo || gitHubRepoInput,
           branch: updateCheckResult.branch || 'main',
           commitSha: updateCheckResult.latestCommit.sha,
-          token: gitHubToken.trim() || undefined
+          token: gitHubToken.trim() || undefined,
+          actionType: isRollback ? 'rollback' : 'update',
+          isRollback
         })
       });
 
       const data = await resp.json();
       if (!resp.ok) {
-        setUpdateError(data.error || 'Не удалось применить обновление проекта');
+        setUpdateError(data.error || (isRollback ? 'Не удалось откатить проект' : 'Не удалось применить обновление проекта'));
         setIsApplyingUpdate(false);
         return;
       }
 
-      setUpdateSuccessMessage(data.message || 'Проект успешно обновлен');
+      setUpdateSuccessMessage(data.message || (isRollback ? 'Проект успешно откачен к версии из репозитория' : 'Проект успешно обновлен'));
       setUpdatedFilesList(data.updatedFiles || []);
       if (data.version) {
         setProjectVersion(data.version);
       }
       setUpdateCheckResult(prev => prev ? { ...prev, upToDate: true } : null);
 
-      setLogs(prev => prev + `\n[INFO] ${data.message}\nОбновлено компонентов:\n - ${(data.updatedFiles || []).join('\n - ')}\n`);
+      setLogs(prev => prev + `\n[INFO] ${data.message}\n${isRollback ? 'Синхронизировано' : 'Обновлено'} компонентов:\n - ${(data.updatedFiles || []).join('\n - ')}\n`);
       fetchFiles();
       fetchArtifacts();
     } catch (err: any) {
-      setUpdateError('Ошибка сети при обновлении проекта: ' + err.message);
+      setUpdateError((isRollback ? 'Ошибка сети при откате проекта: ' : 'Ошибка сети при обновлении проекта: ') + err.message);
     } finally {
       setIsApplyingUpdate(false);
     }
@@ -2571,12 +2576,16 @@ export default function App() {
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                       {/* Критерий 1: Файл версии */}
                       <div className={`p-3 rounded-xl border flex items-center justify-between text-xs ${
-                        updateCheckResult.hasVersionDiff 
-                          ? 'bg-amber-950/40 border-amber-600/60 text-amber-200' 
-                          : 'bg-emerald-950/40 border-emerald-600/60 text-emerald-200'
+                        updateCheckResult.versionDiffStatus === 'older'
+                          ? 'bg-amber-950/40 border-amber-600/60 text-amber-200'
+                          : updateCheckResult.hasVersionDiff 
+                            ? 'bg-blue-950/40 border-blue-600/60 text-blue-200' 
+                            : 'bg-emerald-950/40 border-emerald-600/60 text-emerald-200'
                       }`}>
                         <div className="flex items-center gap-2">
-                          <span className="text-base">{updateCheckResult.hasVersionDiff ? '⚠️' : '✓'}</span>
+                          <span className="text-base">
+                            {updateCheckResult.versionDiffStatus === 'older' ? '⏪' : updateCheckResult.hasVersionDiff ? '⚡' : '✓'}
+                          </span>
                           <div>
                             <span className="font-bold block">Файл версии ({updateCheckResult.localAppVersion?.fileSource || 'version.json'})</span>
                             <span className="text-[11px] opacity-80">
@@ -2585,9 +2594,17 @@ export default function App() {
                           </div>
                         </div>
                         <span className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold ${
-                          updateCheckResult.hasVersionDiff ? 'bg-amber-900 text-amber-200' : 'bg-emerald-900 text-emerald-200'
+                          updateCheckResult.versionDiffStatus === 'older'
+                            ? 'bg-amber-900 text-amber-200'
+                            : updateCheckResult.hasVersionDiff
+                              ? 'bg-blue-900 text-blue-200'
+                              : 'bg-emerald-900 text-emerald-200'
                         }`}>
-                          {updateCheckResult.hasVersionDiff ? 'Новая версия' : 'Актуальна'}
+                          {updateCheckResult.versionDiffStatus === 'older'
+                            ? 'Старая в репо'
+                            : updateCheckResult.hasVersionDiff
+                              ? 'Новая версия'
+                              : 'Актуальна'}
                         </span>
                       </div>
 
@@ -2648,131 +2665,159 @@ export default function App() {
                           </button>
                         </div>
                       </div>
-                    ) : (
-                      /* СЛУЧАЙ 2: Версии НЕ совпадают (доступно обновление) */
-                      <div className="p-5 bg-[#231709] border-2 border-amber-500/60 rounded-2xl space-y-4 shadow-xl shadow-amber-950/30">
-                        <div className="flex items-start gap-3">
-                          <div className="w-10 h-10 rounded-xl bg-amber-950 border border-amber-500 text-amber-300 flex items-center justify-center font-bold text-xl flex-shrink-0 mt-0.5">
-                            ⚡
-                          </div>
-                          <div className="flex-1">
-                            <h3 className="text-base font-bold text-amber-300 flex items-center gap-2">
-                              Доступно обновление проекта с GitHub!
-                              {updateCheckResult.hasVersionDiff && updateCheckResult.remoteAppVersion && (
-                                <span className="text-xs font-mono px-2 py-0.5 rounded-full bg-amber-950 text-amber-200 border border-amber-700">
-                                  v{updateCheckResult.remoteAppVersion.version}
-                                </span>
-                              )}
-                              {updateCheckResult.diffFiles && updateCheckResult.diffFiles.length > 0 && (
-                                <span className="text-xs font-mono px-2 py-0.5 rounded-full bg-amber-950 text-amber-200 border border-amber-700">
-                                  {updateCheckResult.diffFiles.length} измененных файлов
-                                </span>
-                              )}
-                            </h3>
-                            <p className="text-xs text-amber-200/90 mt-1">
-                              {updateCheckResult.hasVersionDiff 
-                                ? updateCheckResult.versionComparisonMessage 
-                                : 'В репозитории GitHub найдены обновления кода по сравнению с локальной установкой.'}
-                            </p>
-                          </div>
-                        </div>
-
-                        {/* Список файлов с различиями в коде (diff) */}
-                        {updateCheckResult.diffFiles && updateCheckResult.diffFiles.length > 0 && (
-                          <div className="space-y-1.5">
-                            <h4 className="text-xs font-bold text-amber-300 flex items-center gap-1.5 uppercase tracking-wider">
-                              <span>Различия в коде (Diff файлов):</span>
-                              <span className="text-gray-400 font-normal">({updateCheckResult.diffFiles.length} файлов)</span>
-                            </h4>
-                            <div className="max-h-36 overflow-y-auto space-y-1 bg-[#120d05] border border-amber-900/50 p-2.5 rounded-xl font-mono text-xs">
-                              {updateCheckResult.diffFiles.map((df, i) => (
-                                <div key={i} className="flex items-center justify-between text-[11px] py-0.5 px-1.5 rounded hover:bg-amber-950/40">
-                                  <span className="text-gray-200">{df.path}</span>
-                                  <span className={`px-1.5 py-0.2 rounded text-[10px] ${
-                                    df.status === 'added' ? 'bg-emerald-950 text-emerald-300 border border-emerald-800' : 'bg-amber-950 text-amber-300 border border-amber-800'
+                    ) : (() => {
+                      const isRollback = updateCheckResult.actionType === 'rollback' || updateCheckResult.versionDiffStatus === 'older';
+                      return (
+                        <div className={`p-5 rounded-2xl space-y-4 shadow-xl ${
+                          isRollback 
+                            ? 'bg-[#231509] border-2 border-amber-600/70 shadow-amber-950/40' 
+                            : 'bg-[#0f1d2e] border-2 border-blue-500/60 shadow-blue-950/40'
+                        }`}>
+                          <div className="flex items-start gap-3">
+                            <div className={`w-10 h-10 rounded-xl border flex items-center justify-center font-bold text-xl flex-shrink-0 mt-0.5 ${
+                              isRollback
+                                ? 'bg-amber-950 border-amber-500 text-amber-300'
+                                : 'bg-blue-950 border-blue-500 text-blue-300'
+                            }`}>
+                              {isRollback ? '⏪' : '⚡'}
+                            </div>
+                            <div className="flex-1">
+                              <h3 className={`text-base font-bold flex flex-wrap items-center gap-2 ${
+                                isRollback ? 'text-amber-300' : 'text-blue-300'
+                              }`}>
+                                {isRollback ? 'В репозитории более старая версия (доступен откат)' : 'Доступно обновление проекта с GitHub!'}
+                                {updateCheckResult.remoteAppVersion && (
+                                  <span className={`text-xs font-mono px-2 py-0.5 rounded-full border ${
+                                    isRollback 
+                                      ? 'bg-amber-950 text-amber-200 border-amber-700' 
+                                      : 'bg-blue-950 text-blue-200 border-blue-700'
                                   }`}>
-                                    {df.status === 'added' ? 'новый' : 'изменен'}
+                                    v{updateCheckResult.remoteAppVersion.version}
                                   </span>
-                                </div>
-                              ))}
+                                )}
+                                {updateCheckResult.diffFiles && updateCheckResult.diffFiles.length > 0 && (
+                                  <span className="text-xs font-mono px-2 py-0.5 rounded-full bg-gray-900 text-gray-200 border border-gray-700">
+                                    {updateCheckResult.diffFiles.length} измененных файлов
+                                  </span>
+                                )}
+                              </h3>
+                              <p className={`text-xs mt-1 ${isRollback ? 'text-amber-200/90' : 'text-blue-200/90'}`}>
+                                {updateCheckResult.versionComparisonMessage 
+                                  ? updateCheckResult.versionComparisonMessage
+                                  : isRollback
+                                    ? `В репозитории GitHub обнаружена версия v${updateCheckResult.remoteAppVersion?.version || ''}, которая старше локальной. Вы можете откатить проект к версии из репозитория.`
+                                    : 'В репозитории GitHub найдены обновления кода по сравнению с локальной установкой. Доступно обновление.'}
+                              </p>
                             </div>
                           </div>
-                        )}
 
-                        {/* Сообщения Git-коммитов */}
-                        <div className="space-y-2">
-                          <h4 className="text-xs font-bold text-amber-200/90 flex items-center gap-1.5 uppercase tracking-wider">
-                            <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>
-                            Сообщения Git (список коммитов):
-                          </h4>
-
-                          <div className="max-h-48 overflow-y-auto space-y-2 bg-[#120d05] border border-amber-900/50 p-3 rounded-xl font-mono text-xs">
-                            {updateCheckResult.commitsAhead && updateCheckResult.commitsAhead.length > 0 ? (
-                              updateCheckResult.commitsAhead.map((c, i) => (
-                                <div key={i} className="p-2 bg-[#1c1409] border border-amber-900/40 rounded-lg space-y-1">
-                                  <div className="flex items-center justify-between text-[11px]">
-                                    <span className="text-amber-400 font-bold">{c.sha.slice(0, 7)}</span>
-                                    <span className="text-gray-400">{c.author} • {c.date ? new Date(c.date).toLocaleString('ru-RU') : ''}</span>
+                          {/* Список файлов с различиями в коде (diff) */}
+                          {updateCheckResult.diffFiles && updateCheckResult.diffFiles.length > 0 && (
+                            <div className="space-y-1.5">
+                              <h4 className="text-xs font-bold text-gray-300 flex items-center gap-1.5 uppercase tracking-wider">
+                                <span>Различия в коде (Diff файлов):</span>
+                                <span className="text-gray-400 font-normal">({updateCheckResult.diffFiles.length} файлов)</span>
+                              </h4>
+                              <div className="max-h-36 overflow-y-auto space-y-1 bg-[#0b0f17] border border-gray-800 p-2.5 rounded-xl font-mono text-xs">
+                                {updateCheckResult.diffFiles.map((df, i) => (
+                                  <div key={i} className="flex items-center justify-between text-[11px] py-0.5 px-1.5 rounded hover:bg-gray-800/40">
+                                    <span className="text-gray-200">{df.path}</span>
+                                    <span className={`px-1.5 py-0.2 rounded text-[10px] ${
+                                      df.status === 'added' ? 'bg-emerald-950 text-emerald-300 border border-emerald-800' : 'bg-amber-950 text-amber-300 border border-amber-800'
+                                    }`}>
+                                      {df.status === 'added' ? 'новый' : 'изменен'}
+                                    </span>
                                   </div>
-                                  <p className="text-gray-200 font-sans text-xs">{c.message}</p>
-                                </div>
-                              ))
-                            ) : (
-                              <div className="p-2 bg-[#1c1409] border border-amber-900/40 rounded-lg space-y-1">
-                                <div className="flex items-center justify-between text-[11px]">
-                                  <span className="text-amber-400 font-bold">{updateCheckResult.latestCommit.sha.slice(0, 7)}</span>
-                                  <span className="text-gray-400">{updateCheckResult.latestCommit.author}</span>
-                                </div>
-                                <p className="text-gray-200 font-sans text-xs">{updateCheckResult.latestCommit.message}</p>
+                                ))}
                               </div>
-                            )}
-                          </div>
-                        </div>
+                            </div>
+                          )}
 
-                        {/* Кнопки подтверждения и отмены */}
-                        <div className="pt-3 border-t border-amber-900/50 flex flex-col sm:flex-row items-center justify-between gap-3">
-                          <p className="text-[11px] text-amber-300/80">
-                            Обновление затронет python-скрипты <code className="text-amber-200">graph/</code>, <code className="text-amber-200">pcb_to_netlist/</code>, <code className="text-amber-200">huge_file/</code> и конфигурации.
-                          </p>
+                          {/* Сообщения Git-коммитов */}
+                          <div className="space-y-2">
+                            <h4 className="text-xs font-bold text-gray-300 flex items-center gap-1.5 uppercase tracking-wider">
+                              <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>
+                              Сообщения Git (список коммитов):
+                            </h4>
 
-                          <div className="flex items-center gap-3 w-full sm:w-auto">
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setUpdateCheckResult(null);
-                                setUpdateError('');
-                              }}
-                              disabled={isApplyingUpdate}
-                              className="flex-1 sm:flex-none px-4 py-2.5 bg-[#2a1c0d] hover:bg-[#382613] text-gray-300 hover:text-white rounded-xl text-xs font-bold transition-all border border-amber-900/60 active:scale-95"
-                            >
-                              ✕ Отменить
-                            </button>
-
-                            <button
-                              type="button"
-                              onClick={() => applyProjectUpdate()}
-                              disabled={isApplyingUpdate}
-                              className="flex-1 sm:flex-none px-6 py-2.5 bg-gradient-to-r from-emerald-600 to-green-600 hover:from-emerald-500 hover:to-green-500 text-white rounded-xl text-xs font-black transition-all shadow-xl shadow-green-950/60 flex items-center justify-center gap-2 active:scale-95 border border-emerald-400/80"
-                            >
-                              {isApplyingUpdate ? (
-                                <>
-                                  <svg className="animate-spin w-4 h-4 text-white" viewBox="0 0 24 24" fill="none">
-                                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                                  </svg>
-                                  <span>Обновление...</span>
-                                </>
+                            <div className="max-h-48 overflow-y-auto space-y-2 bg-[#0b0f17] border border-gray-800 p-3 rounded-xl font-mono text-xs">
+                              {updateCheckResult.commitsAhead && updateCheckResult.commitsAhead.length > 0 ? (
+                                updateCheckResult.commitsAhead.map((c, i) => (
+                                  <div key={i} className="p-2 bg-[#141a27] border border-gray-800 rounded-lg space-y-1">
+                                    <div className="flex items-center justify-between text-[11px]">
+                                      <span className="text-amber-400 font-bold">{c.sha.slice(0, 7)}</span>
+                                      <span className="text-gray-400">{c.author} • {c.date ? new Date(c.date).toLocaleString('ru-RU') : ''}</span>
+                                    </div>
+                                    <p className="text-gray-200 font-sans text-xs">{c.message}</p>
+                                  </div>
+                                ))
                               ) : (
-                                <>
-                                  <span>✓</span>
-                                  <span>Утвердить обновление проекта</span>
-                                </>
+                                <div className="p-2 bg-[#141a27] border border-gray-800 rounded-lg space-y-1">
+                                  <div className="flex items-center justify-between text-[11px]">
+                                    <span className="text-amber-400 font-bold">{updateCheckResult.latestCommit.sha.slice(0, 7)}</span>
+                                    <span className="text-gray-400">{updateCheckResult.latestCommit.author}</span>
+                                  </div>
+                                  <p className="text-gray-200 font-sans text-xs">{updateCheckResult.latestCommit.message}</p>
+                                </div>
                               )}
-                            </button>
+                            </div>
+                          </div>
+
+                          {/* Кнопки подтверждения и отмены */}
+                          <div className="pt-3 border-t border-gray-800 flex flex-col sm:flex-row items-center justify-between gap-3">
+                            <p className="text-[11px] text-gray-400">
+                              {isRollback 
+                                ? <>Откат синхронизирует python-скрипты <code className="text-amber-300">graph/</code>, <code className="text-amber-300">pcb_to_netlist/</code>, <code className="text-amber-300">huge_file/</code> с версией из репозитория.</>
+                                : <>Обновление затронет python-скрипты <code className="text-blue-300">graph/</code>, <code className="text-blue-300">pcb_to_netlist/</code>, <code className="text-blue-300">huge_file/</code> и конфигурации.</>}
+                            </p>
+
+                            <div className="flex items-center gap-3 w-full sm:w-auto">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setUpdateCheckResult(null);
+                                  setUpdateError('');
+                                }}
+                                disabled={isApplyingUpdate}
+                                className="flex-1 sm:flex-none px-4 py-2.5 bg-gray-900 hover:bg-gray-800 text-gray-300 hover:text-white rounded-xl text-xs font-bold transition-all border border-gray-700 active:scale-95"
+                              >
+                                {isRollback ? '✕ Оставить текущую версию' : '✕ Отменить'}
+                              </button>
+
+                              <button
+                                type="button"
+                                onClick={() => applyProjectUpdate()}
+                                disabled={isApplyingUpdate}
+                                className={`flex-1 sm:flex-none px-6 py-2.5 rounded-xl text-xs font-black transition-all shadow-xl flex items-center justify-center gap-2 active:scale-95 border ${
+                                  isRollback
+                                    ? 'bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-500 hover:to-orange-500 text-white shadow-amber-950/60 border-amber-400/80'
+                                    : 'bg-gradient-to-r from-emerald-600 to-green-600 hover:from-emerald-500 hover:to-green-500 text-white shadow-green-950/60 border-emerald-400/80'
+                                }`}
+                              >
+                                {isApplyingUpdate ? (
+                                  <>
+                                    <svg className="animate-spin w-4 h-4 text-white" viewBox="0 0 24 24" fill="none">
+                                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                    </svg>
+                                    <span>{isRollback ? 'Выполняется откат...' : 'Обновление...'}</span>
+                                  </>
+                                ) : (
+                                  <>
+                                    <span>{isRollback ? '⏪' : '✓'}</span>
+                                    <span>
+                                      {isRollback 
+                                        ? `Утвердить откат до v${updateCheckResult.remoteAppVersion?.version || 'репозитория'}`
+                                        : 'Утвердить обновление проекта'}
+                                    </span>
+                                  </>
+                                )}
+                              </button>
+                            </div>
                           </div>
                         </div>
-                      </div>
-                    )}
+                      );
+                    })()}
                   </div>
                 )}
               </div>

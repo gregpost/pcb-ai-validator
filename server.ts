@@ -1026,16 +1026,19 @@ async function startServer() {
         if (cmp > 0) {
           hasVersionDiff = true;
           versionDiffStatus = 'newer';
-          versionComparisonMessage = `На GitHub найдена новая версия в ${remoteAppVersion.fileSource}: v${remoteAppVersion.version} (локально: v${localAppVersion.version})`;
+          versionComparisonMessage = `На GitHub найдена более новая версия в ${remoteAppVersion.fileSource}: v${remoteAppVersion.version} (локально: v${localAppVersion.version}). Доступно обновление.`;
         } else if (cmp < 0) {
           versionDiffStatus = 'older';
-          versionComparisonMessage = `Локальная версия (v${localAppVersion.version}) новее, чем в репозитории (v${remoteAppVersion.version})`;
+          versionComparisonMessage = `В репозитории обнаружена более старая версия (v${remoteAppVersion.version}), чем локальная (v${localAppVersion.version}). Доступен откат.`;
         } else {
           // Версии равны, проверяем билд
           if (typeof remoteAppVersion.build === 'number' && typeof localAppVersion.build === 'number' && remoteAppVersion.build > localAppVersion.build) {
             hasVersionDiff = true;
             versionDiffStatus = 'newer';
-            versionComparisonMessage = `На GitHub найден более свежий билд #${remoteAppVersion.build} (локально: #${localAppVersion.build})`;
+            versionComparisonMessage = `На GitHub найден более свежий билд #${remoteAppVersion.build} (локально: #${localAppVersion.build}). Доступно обновление.`;
+          } else if (typeof remoteAppVersion.build === 'number' && typeof localAppVersion.build === 'number' && remoteAppVersion.build < localAppVersion.build) {
+            versionDiffStatus = 'older';
+            versionComparisonMessage = `В репозитории обнаружен более старый билд #${remoteAppVersion.build} (локально: #${localAppVersion.build}). Доступен откат.`;
           } else {
             versionDiffStatus = 'same';
             versionComparisonMessage = `Версии в ${localAppVersion.fileSource} совпадают: v${localAppVersion.version}`;
@@ -1104,11 +1107,16 @@ async function startServer() {
         hasCodeDiff = !Boolean(localSha && remoteSha && (localSha === remoteSha || localSha.startsWith(remoteSha) || remoteSha.startsWith(localSha)));
       }
 
-      // --- ОБЩИЙ РЕЗУЛЬТАТ АКТУАЛЬНОСТИ ПРОЕКТА ---
-      // Проект считается актуальным ТОЛЬКО если:
-      // 1. Нет более новой версии в специальном файле версии (hasVersionDiff === false)
-      // 2. Нет различий в коде файлов (hasCodeDiff === false)
-      const isUpToDate = !hasVersionDiff && !hasCodeDiff;
+      // --- ОБЩИЙ РЕЗУЛЬТАТ АКТУАЛЬНОСТИ И ДЕЙСТВИЯ (ОБНОВЛЕНИЕ / ОТКАТ) ---
+      let actionType: 'update' | 'rollback' | 'none' = 'none';
+      if (versionDiffStatus === 'older') {
+        actionType = 'rollback';
+      } else if (versionDiffStatus === 'newer' || hasCodeDiff) {
+        actionType = 'update';
+      }
+
+      // Проект считается полностью актуальным только если версии совпадают и нет различий в коде
+      const isUpToDate = actionType === 'none';
 
       // Если код идентичен и версия актуальна, автоматически синхронизируем локальный .project_version.json
       let currentVersion = localVersion;
@@ -1175,6 +1183,7 @@ async function startServer() {
 
       res.json({
         upToDate: isUpToDate,
+        actionType,
         hasVersionDiff,
         versionDiffStatus,
         versionComparisonMessage,
@@ -1388,9 +1397,11 @@ async function startServer() {
 
       fs.writeFileSync(PROJECT_VERSION_FILE, JSON.stringify(updatedVersion, null, 2), 'utf8');
 
+      const isRollback = req.body.actionType === 'rollback' || req.body.isRollback;
+      const actionText = isRollback ? 'откачен до версии' : 'обновлен до версии';
       res.json({
         success: true,
-        message: `Проект успешно обновлен до версии ${appliedCommitInfo.shortSha}: «${appliedCommitInfo.message?.split('\n')[0]}»`,
+        message: `Проект успешно ${actionText} ${appliedCommitInfo.shortSha}: «${appliedCommitInfo.message?.split('\n')[0]}»`,
         version: updatedVersion,
         updatedFiles
       });

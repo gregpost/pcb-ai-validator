@@ -1,5 +1,5 @@
 {
-  "version": "1.0.1",
+  "version": "1.0.2",
   "build": 1,
   "releaseName": "PCB AI Validator Release",
   "description": "Интеллектуальный помощник отладки проектов печатных плат Altium Designer",
