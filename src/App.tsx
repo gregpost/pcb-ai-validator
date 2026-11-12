@@ -1,7 +1,8 @@
 // file: src/App.tsx
 // Main application component for PCB AI Validator console
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef } from 'react'; // useState, useEffect, useRef
+import { parseAlgorithmProgress } from './utils/algorithmProgress'; // parseAlgorithmProgress
 
 interface AppFile {
   name: string;
@@ -229,6 +230,27 @@ export default function App() {
   const promptsRef = useRef<PromptItem[]>([]);
   promptsRef.current = prompts;
 
+  // Auto LLM configuration and state
+  const [autoLlmEnabled, setAutoLlmEnabled] = useState<boolean>(() => {
+    return localStorage.getItem('pcb_auto_llm_enabled') === 'true';
+  });
+  const [llmProvider, setLlmProvider] = useState<'groq' | 'gemini' | 'local'>(() => {
+    return (localStorage.getItem('pcb_llm_provider') as any) || 'groq';
+  });
+  const [localLlmUrl, setLocalLlmUrl] = useState<string>(() => {
+    return localStorage.getItem('pcb_local_llm_url') || 'http://localhost:11434/v1';
+  });
+  const [isGeneratingLlm, setIsGeneratingLlm] = useState(false);
+  const [llmProgressText, setLlmProgressText] = useState('');
+  const [llmConfigInfo, setLlmConfigInfo] = useState<{ groqConfigured: boolean; geminiConfigured: boolean; localUrl: string }>({
+    groqConfigured: false,
+    geminiConfigured: false,
+    localUrl: 'http://localhost:11434/v1',
+  });
+
+  // Динамические комментарии и прогресс выполнения на русском языке
+  const progressInfo = parseAlgorithmProgress(logs, isRunning, aiWaiting, aiStage);
+
   const [targetComponent, setTargetComponent] = useState(() => {
     return localStorage.getItem('pcb_target_component') || '';
   });
@@ -441,6 +463,33 @@ export default function App() {
       setLogs(prev => prev + `\n[INFO] ${data.message}\nОбновлено компонентов:\n - ${(data.updatedFiles || []).join('\n - ')}\n`);
       fetchFiles();
       fetchArtifacts();
+
+      // Автоматическая отправка изменений (Push) в GitHub при обновлении проекта
+      try {
+        setLogs(prev => prev + "[INFO] Запуск автоматической отправки изменений (Push) в репозиторий...\n");
+        const pushResp = await fetch('/api/project/push', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            repo: pushRepoInput.trim() || 'gregpost/pcb-ai-validator',
+            branch: pushBranchInput.trim() || 'main',
+            token: gitHubToken.trim() || undefined,
+            commitMessage: `chore: авто-пуш после обновления проекта (${data.version?.shortSha || 'latest'})`,
+            bumpType: 'patch',
+            forcePush: false
+          })
+        });
+        const pushData = await pushResp.json();
+        if (pushResp.ok) {
+          setLogs(prev => prev + `[INFO] Авто-пуш успешно выполнен: коммит ${pushData.shortSha || ''}\n`);
+          fetchProjectVersion();
+          fetchPushDiff();
+        } else {
+          setLogs(prev => prev + `[INFO] Авто-пуш пропущен: ${pushData.error || pushResp.statusText}\n`);
+        }
+      } catch (pushErr: any) {
+        console.warn('Auto-push error:', pushErr);
+      }
     } catch (err: any) {
       setUpdateError('Ошибка сети при обновлении проекта: ' + err.message);
     } finally {
@@ -877,6 +926,106 @@ export default function App() {
     }
   };
 
+  // Запрос одного промпта к выбранному провайдеру LLM
+  const generateSinglePromptLlm = async (promptObj: PromptItem): Promise<string> => {
+    const res = await fetch('/api/llm-generate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        prompt: promptObj.content,
+        provider: llmProvider,
+        endpoint: localLlmUrl,
+      }),
+    });
+    if (!res.ok) {
+      const errData = await res.json().catch(() => ({}));
+      throw new Error(errData.error || `HTTP ${res.status}`);
+    }
+    const data = await res.json();
+    return data.answer || '';
+  };
+
+  // Ручной запуск авто-ответа на текущий выбранный фрагмент
+  const handleGenerateCurrentLlm = async () => {
+    const currentPrompt = prompts[currentPromptIdx];
+    if (!currentPrompt || isGeneratingLlm) return;
+    setIsGeneratingLlm(true);
+    setLlmProgressText(`Запрос к ${llmProvider.toUpperCase()} (#${currentPrompt.index})...`);
+    setPromptValidationError('');
+    try {
+      const ans = await generateSinglePromptLlm(currentPrompt);
+      setAiAnswersMap(prev => {
+        const next = { ...prev, [currentPrompt.index]: ans };
+        localStorage.setItem('pcb_ai_answers_map', JSON.stringify(next));
+        return next;
+      });
+      setLlmProgressText('Ответ успешно получен!');
+      setTimeout(() => setLlmProgressText(''), 2500);
+    } catch (err: any) {
+      setPromptValidationError(`Ошибка генерации LLM: ${err.message}`);
+    } finally {
+      setIsGeneratingLlm(false);
+    }
+  };
+
+  // Автоматический запуск генерации для всех фрагментов
+  const generateAllPromptsWithLlm = async (autoSubmitAfter = false) => {
+    if (prompts.length === 0 || isGeneratingLlm) return;
+    setIsGeneratingLlm(true);
+    setPromptValidationError('');
+    const updatedAnswers = { ...aiAnswersMap };
+    try {
+      for (let i = 0; i < prompts.length; i++) {
+        const p = prompts[i];
+        if (!updatedAnswers[p.index]?.trim()) {
+          setLlmProgressText(`Генерация ${i + 1} из ${prompts.length} (${llmProvider.toUpperCase()})...`);
+          const ans = await generateSinglePromptLlm(p);
+          updatedAnswers[p.index] = ans;
+          setAiAnswersMap({ ...updatedAnswers });
+          localStorage.setItem('pcb_ai_answers_map', JSON.stringify(updatedAnswers));
+        }
+      }
+      setLlmProgressText(`Все ответы (${prompts.length}) получены!`);
+      if (autoSubmitAfter) {
+        setLlmProgressText('Авто-возобновление пайплайна...');
+        const parts: string[] = [];
+        prompts.forEach(p => {
+          const ans = (updatedAnswers[p.index] || '').trim();
+          if (ans) parts.push(ans);
+        });
+        const finalAnswers = parts.join('\n\n');
+        const res = await fetch('/ai-submit', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ stage: aiStage, answers: finalAnswers }),
+        });
+        if (res.ok) {
+          setAiWaiting(false);
+          setStatus('Ответы LLM приняты. Пайплайн возобновлен...');
+          setActiveTab('console');
+        } else {
+          const errData = await res.json().catch(() => ({}));
+          setPromptValidationError(`Ошибка возобновления: ${errData.error || res.statusText}`);
+        }
+      }
+    } catch (err: any) {
+      setPromptValidationError(`Ошибка LLM: ${err.message}`);
+    } finally {
+      setIsGeneratingLlm(false);
+      setTimeout(() => setLlmProgressText(''), 3000);
+    }
+  };
+
+  // Авто-генерация при возникновении паузы и включенном режиме авто-LLM
+  useEffect(() => {
+    if (autoLlmEnabled && aiWaiting && prompts.length > 0 && !isGeneratingLlm && !isSubmittingAi) {
+      const hasUnanswered = prompts.some(p => !(aiAnswersMap[p.index] || '').trim());
+      if (hasUnanswered) {
+        generateAllPromptsWithLlm(true);
+      }
+    }
+  }, [autoLlmEnabled, aiWaiting, prompts]);
+
   // Принудительная остановка пайплайна
   const stopPipeline = async () => {
     try {
@@ -968,6 +1117,17 @@ export default function App() {
     fetchArtifacts();
     fetchProjectVersion();
     checkAiStatus();
+    fetch('/api/llm-config')
+      .then(res => res.json())
+      .then(cfg => {
+        if (cfg) {
+          setLlmConfigInfo(cfg);
+          if (!localStorage.getItem('pcb_llm_provider') && cfg.defaultProvider) {
+            setLlmProvider(cfg.defaultProvider);
+          }
+        }
+      })
+      .catch(() => {});
     // При начальной загрузке страницы подгружаем последний лог, чтобы не терять вывод
     fetch('/logs')
       .then(res => res.text())
@@ -1401,18 +1561,35 @@ export default function App() {
                 </p>
               </div>
             ) : (
-              <div className="p-3 bg-[#171717] border border-[#2a2a2a] rounded-xl flex items-center justify-between">
-                <div className="flex items-center gap-2.5">
-                  <div className={`w-3 h-3 rounded-full flex-shrink-0 ${status === 'Выполняется...' ? 'bg-[#fbbf24] animate-pulse' : status === 'Завершено' ? 'bg-[#10b981]' : isErrorStatus ? 'bg-red-500' : 'bg-[#fbbf24]'}`}></div>
-                  <div>
+              <div className={`p-3 bg-[#171717] border rounded-xl flex items-center justify-between ${
+                !isRunning && pcbCount === 0 ? 'border-red-900/60 bg-red-950/20' : 'border-[#2a2a2a]'
+              }`}>
+                <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                  <div className={`w-3 h-3 rounded-full flex-shrink-0 ${
+                    isRunning ? 'bg-[#fbbf24] animate-pulse' :
+                    pcbCount === 0 ? 'bg-red-500' :
+                    status === 'Завершено' ? 'bg-[#10b981]' :
+                    isErrorStatus ? 'bg-red-500' : 'bg-[#fbbf24]'
+                  }`}></div>
+                  <div className="min-w-0 flex-1">
                     <div className="text-[10px] uppercase font-bold text-gray-500 tracking-wider">Текущий статус</div>
-                    <div className={`text-xs font-bold truncate max-w-[170px] ${status === 'Завершено' ? 'text-[#10b981]' : isErrorStatus ? 'text-red-400' : 'text-[#fbbf24]'}`}>
-                      {status}
+                    <div className={`text-xs font-bold ${
+                      !isRunning && pcbCount === 0
+                        ? 'text-red-400 leading-snug'
+                        : status === 'Завершено'
+                        ? 'text-[#10b981] truncate max-w-[170px]'
+                        : isErrorStatus
+                        ? 'text-red-400 truncate max-w-[170px]'
+                        : 'text-[#fbbf24] truncate max-w-[170px]'
+                    }`}>
+                      {!isRunning && pcbCount === 0
+                        ? 'Для запуска пайплайна загрузите хотя бы один файл .PcbDoc'
+                        : status}
                     </div>
                   </div>
                 </div>
                 {isRunning && (
-                  <span className="text-[10px] text-amber-400/90 font-mono animate-pulse">
+                  <span className="text-[10px] text-amber-400/90 font-mono animate-pulse flex-shrink-0 ml-2">
                     Выполняется...
                   </span>
                 )}
@@ -1803,6 +1980,15 @@ export default function App() {
                     {targetComponent}
                   </span>
                 )}
+                <span className="hidden lg:inline-flex items-center gap-1.5 text-xs text-gray-400 font-sans px-2.5 py-0.5 rounded bg-[#1c1c1c] border border-[#2e2e2e]">
+                  <span className={`w-1.5 h-1.5 rounded-full ${
+                    progressInfo.statusType === 'running' ? 'bg-blue-400 animate-pulse' :
+                    progressInfo.statusType === 'waiting' ? 'bg-amber-400 animate-pulse' :
+                    progressInfo.statusType === 'success' ? 'bg-emerald-400' :
+                    progressInfo.statusType === 'error' ? 'bg-red-400' : 'bg-gray-400'
+                  }`}></span>
+                  <span className="text-gray-300 font-medium truncate max-w-xs">{progressInfo.title}</span>
+                </span>
               </div>
             </div>
           </div>
@@ -1959,6 +2145,114 @@ export default function App() {
                           <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
                         </>
                       )}
+                    </button>
+                  </div>
+                </div>
+
+                {/* Панель режима автоматической LLM */}
+                <div className="mt-2.5 p-2 bg-[#171717] border border-[#2c2c2c] rounded-lg flex flex-wrap items-center justify-between gap-2.5 text-xs flex-shrink-0">
+                  <div className="flex items-center gap-3 flex-wrap">
+                    <label className="flex items-center gap-1.5 cursor-pointer select-none font-bold text-gray-200 hover:text-white">
+                      <input
+                        type="checkbox"
+                        checked={autoLlmEnabled}
+                        onChange={(e) => {
+                          const val = e.target.checked;
+                          setAutoLlmEnabled(val);
+                          localStorage.setItem('pcb_auto_llm_enabled', String(val));
+                        }}
+                        className="rounded border-[#444] bg-[#222] text-blue-600 focus:ring-0 cursor-pointer"
+                      />
+                      <span className="flex items-center gap-1">
+                        <span>🤖 Режим авто-LLM</span>
+                        <span className="text-[10px] text-gray-400 font-normal hidden sm:inline">(без ручного копирования)</span>
+                      </span>
+                    </label>
+
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-gray-400">Провайдер:</span>
+                      <select
+                        value={llmProvider}
+                        onChange={(e) => {
+                          const val = e.target.value as any;
+                          setLlmProvider(val);
+                          localStorage.setItem('pcb_llm_provider', val);
+                        }}
+                        className="bg-[#202020] border border-[#383838] rounded px-2 py-1 text-xs text-white outline-none cursor-pointer"
+                      >
+                        <option value="groq">⚡ Groq (Llama-3.3-70b Free API)</option>
+                        <option value="gemini">✨ Gemini (3.8 Flash Free API)</option>
+                        <option value="local">💻 Локальная (Ollama / LocalAI)</option>
+                      </select>
+                    </div>
+
+                    {llmProvider === 'groq' && (
+                      <span className={`text-[10px] px-2 py-0.5 rounded font-mono ${
+                        llmConfigInfo.groqConfigured 
+                          ? 'bg-emerald-950 text-emerald-300 border border-emerald-800' 
+                          : 'bg-amber-950 text-amber-300 border border-amber-800'
+                      }`} title="Бесплатный ключ на console.groq.com, задается в .env (GROQ_API_KEY)">
+                        {llmConfigInfo.groqConfigured ? 'Groq ключ активен ✓' : 'Задайте GROQ_API_KEY в .env'}
+                      </span>
+                    )}
+
+                    {llmProvider === 'gemini' && (
+                      <span className={`text-[10px] px-2 py-0.5 rounded font-mono ${
+                        llmConfigInfo.geminiConfigured 
+                          ? 'bg-emerald-950 text-emerald-300 border border-emerald-800' 
+                          : 'bg-amber-950 text-amber-300 border border-amber-800'
+                      }`} title="Ключ задается в .env (GEMINI_API_KEY)">
+                        {llmConfigInfo.geminiConfigured ? 'Gemini ключ активен ✓' : 'Задайте GEMINI_API_KEY в .env'}
+                      </span>
+                    )}
+
+                    {llmProvider === 'local' && (
+                      <span className="text-[10px] px-2 py-0.5 rounded font-mono bg-blue-950 text-blue-300 border border-blue-800">
+                        Ключ не требуется (Ollama)
+                      </span>
+                    )}
+
+                    {llmProvider === 'local' && (
+                      <div className="flex items-center gap-1">
+                        <span className="text-gray-400">URL:</span>
+                        <input
+                          type="text"
+                          value={localLlmUrl}
+                          onChange={(e) => {
+                            setLocalLlmUrl(e.target.value);
+                            localStorage.setItem('pcb_local_llm_url', e.target.value);
+                          }}
+                          placeholder="http://localhost:11434/v1"
+                          className="bg-[#202020] border border-[#383838] rounded px-2 py-0.5 text-xs font-mono text-gray-200 outline-none w-48"
+                        />
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="flex items-center gap-2 flex-wrap">
+                    {llmProgressText && (
+                      <span className="text-blue-400 font-mono text-xs flex items-center gap-1.5 animate-pulse">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="animate-spin"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
+                        {llmProgressText}
+                      </span>
+                    )}
+
+                    <button
+                      onClick={handleGenerateCurrentLlm}
+                      disabled={isGeneratingLlm || prompts.length === 0}
+                      className="px-2.5 py-1 bg-[#1e293b] hover:bg-[#334155] border border-blue-900/50 text-blue-300 disabled:opacity-40 rounded text-xs transition-colors flex items-center gap-1"
+                      title="Запросить ответ через выбранную LLM для текущего промпта"
+                    >
+                      <span>⚡ Заполнить текущий</span>
+                    </button>
+
+                    <button
+                      onClick={() => generateAllPromptsWithLlm(false)}
+                      disabled={isGeneratingLlm || prompts.length === 0}
+                      className="px-3 py-1 bg-blue-600 hover:bg-blue-500 text-white disabled:opacity-40 rounded text-xs font-bold transition-all shadow flex items-center gap-1 active:scale-95"
+                      title="Автоматически отправить все фрагменты в LLM и заполнить ответы"
+                    >
+                      <span>⚡ Ответить на ВСЕ через LLM</span>
                     </button>
                   </div>
                 </div>
@@ -2195,6 +2489,49 @@ export default function App() {
                     </button>
                   </div>
                 </div>
+
+                {/* Динамический комментарий о текущей работе алгоритма на русском языке */}
+                <div className="mb-2.5 p-3 bg-[#161616] border border-[#282828] rounded-xl flex flex-col gap-2 flex-shrink-0 shadow-lg">
+                  <div className="flex items-center justify-between gap-2 flex-wrap">
+                    <div className="flex items-center gap-2">
+                      <span className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${
+                        progressInfo.statusType === 'running' ? 'bg-blue-500 animate-pulse' :
+                        progressInfo.statusType === 'waiting' ? 'bg-amber-400 animate-pulse' :
+                        progressInfo.statusType === 'success' ? 'bg-emerald-500' :
+                        progressInfo.statusType === 'error' ? 'bg-red-500' : 'bg-gray-500'
+                      }`}></span>
+                      <span className="text-xs font-bold text-white tracking-wide">
+                        {progressInfo.title}
+                      </span>
+                      <span className="text-[10px] px-2 py-0.5 rounded bg-[#202020] border border-[#353535] text-gray-300 font-mono">
+                        {progressInfo.stageName}
+                      </span>
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-mono font-bold text-blue-400">
+                        {progressInfo.percent}%
+                      </span>
+                    </div>
+                  </div>
+
+                  <p className="text-xs text-gray-300 leading-normal font-sans">
+                    {progressInfo.description}
+                  </p>
+
+                  {/* Полоса прогресса */}
+                  <div className="w-full bg-[#202020] h-1.5 rounded-full overflow-hidden">
+                    <div
+                      className={`h-full transition-all duration-500 rounded-full ${
+                        progressInfo.statusType === 'error' ? 'bg-red-500' :
+                        progressInfo.statusType === 'success' ? 'bg-emerald-500' :
+                        progressInfo.statusType === 'waiting' ? 'bg-amber-400' : 'bg-blue-500'
+                      }`}
+                      style={{ width: `${progressInfo.percent}%` }}
+                    ></div>
+                  </div>
+                </div>
+
                 <pre ref={scrollRef} className="flex-1 h-full w-full bg-black p-4 md:p-6 border border-[#2a2a2a] rounded-xl overflow-auto whitespace-pre-wrap text-xs md:text-sm leading-relaxed font-mono select-text shadow-inner scrollbar-thin scrollbar-thumb-[#333] scrollbar-track-black">
                   {logs.split('\n').map((line, i) => {
                     let className = "text-green-400/90";

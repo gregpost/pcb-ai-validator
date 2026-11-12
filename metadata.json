@@ -2,5 +2,6 @@
   "name": "PCB AI Validator",
   "description": "Intelligent debugging assistant for Altium Designer PCB projects",
   "requestFramePermissions": [],
+  "capabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

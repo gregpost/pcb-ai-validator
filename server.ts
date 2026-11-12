@@ -9,7 +9,8 @@ import path from 'path'; // path
 import { fileURLToPath } from 'url'; // fileURLToPath
 import { createServer as createViteServer } from 'vite'; // createServer
 import multer from 'multer'; // multer
-import { scanProjectFiles, computeLineDiff, computeNextVersion, bumpProjectVersion, isBinaryPath, FileDiffResult } from './src/typescript/diff_utils.ts';
+import { scanProjectFiles, computeLineDiff, computeNextVersion, bumpProjectVersion, isBinaryPath, FileDiffResult } from './src/typescript/diff_utils.ts'; // scanProjectFiles, computeLineDiff, computeNextVersion, bumpProjectVersion, isBinaryPath, FileDiffResult
+import { queryLlm, getLlmConfig } from './src/services/llmService'; // queryLlm, getLlmConfig
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -2059,6 +2060,27 @@ async function startServer() {
       }
 
       res.json({ success: true, message: 'Ответы сохранены, пайплайн возобновлен' });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.get('/api/llm-config', (req, res) => {
+    try {
+      res.json(getLlmConfig());
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post('/api/llm-generate', async (req, res) => {
+    try {
+      const { prompt, provider, endpoint, model } = req.body;
+      if (!prompt) {
+        return res.status(400).json({ error: 'Промпт не указан' });
+      }
+      const answer = await queryLlm(prompt, provider || 'local', endpoint, model);
+      res.json({ answer });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
