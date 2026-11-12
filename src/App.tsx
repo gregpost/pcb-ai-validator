@@ -69,11 +69,12 @@ export interface ProjectVersionInfo {
   releaseName?: string;
   fileSource?: string;
   updatedFilesCount?: number;
+  commit?: string;
+  updatedAt?: string;
 }
 
 export interface ProjectUpdateCheckResult {
   upToDate: boolean;
-  actionType?: 'update' | 'rollback' | 'none';
   hasVersionDiff?: boolean;
   versionDiffStatus?: 'newer' | 'older' | 'same';
   versionComparisonMessage?: string;
@@ -110,6 +111,61 @@ export interface ProjectUpdateCheckResult {
   }>;
   repo: string;
   branch: string;
+}
+
+export interface DiffLine {
+  type: 'add' | 'delete' | 'context';
+  content: string;
+  oldLineNumber?: number;
+  newLineNumber?: number;
+}
+
+export interface FileDiffResult {
+  path: string;
+  status: 'modified' | 'added' | 'deleted';
+  isBinary: boolean;
+  oldSize?: number;
+  newSize?: number;
+  additions: number;
+  deletions: number;
+  lines: DiffLine[];
+}
+
+export interface PushDiffResponse {
+  repo: string;
+  branch: string;
+  commitSha: string;
+  shortSha: string;
+  currentVersion: string;
+  currentBuild: number;
+  nextVersion: string;
+  nextBuild: number;
+  bumpType: 'patch' | 'minor' | 'major';
+  summary: {
+    totalChanged: number;
+    additions: number;
+    deletions: number;
+    modifiedCount: number;
+    addedCount: number;
+    deletedCount: number;
+  };
+  files: FileDiffResult[];
+}
+
+export interface PushResponse {
+  success: boolean;
+  alreadyUpToDate?: boolean;
+  newCommitSha?: string;
+  shortSha?: string;
+  commitUrl?: string;
+  repo?: string;
+  branch?: string;
+  oldVersion?: string;
+  newVersion?: string;
+  newBuild?: number;
+  pushedFilesCount?: number;
+  message?: string;
+  error?: string;
 }
 
 export interface UploadQueueItem {
@@ -183,7 +239,6 @@ export default function App() {
   const [pinsErrorMessage, setPinsErrorMessage] = useState('');
   const [pcbCompError, setPcbCompError] = useState(false);
   const [pcbCompErrorMessage, setPcbCompErrorMessage] = useState('');
-  const [showRequirementsHelp, setShowRequirementsHelp] = useState(false);
   const [engine, setEngine] = useState<'typescript' | 'python'>(() => {
     return (localStorage.getItem('pcb_engine') as 'typescript' | 'python') || 'typescript';
   });
@@ -257,7 +312,7 @@ export default function App() {
   }, [gitHubToken]);
 
   // GitHub project update state
-  const [gitHubModalTab, setGitHubModalTab] = useState<'update' | 'files'>('update');
+  const [gitHubModalTab, setGitHubModalTab] = useState<'update' | 'push' | 'files'>('update');
   const [projectVersion, setProjectVersion] = useState<ProjectVersionInfo | null>(null);
   const [isCheckingUpdate, setIsCheckingUpdate] = useState(false);
   const [updateCheckResult, setUpdateCheckResult] = useState<ProjectUpdateCheckResult | null>(null);
@@ -265,6 +320,38 @@ export default function App() {
   const [isApplyingUpdate, setIsApplyingUpdate] = useState(false);
   const [updateSuccessMessage, setUpdateSuccessMessage] = useState('');
   const [updatedFilesList, setUpdatedFilesList] = useState<string[]>([]);
+
+  // Push & Diff state
+  const [pushRepoInput, setPushRepoInput] = useState(() => {
+    return localStorage.getItem('pcb_github_push_repo') || 'gregpost/pcb-ai-validator';
+  });
+  const [pushBranchInput, setPushBranchInput] = useState(() => {
+    return localStorage.getItem('pcb_github_push_branch') || 'main';
+  });
+  const [pushBumpType, setPushBumpType] = useState<'patch' | 'minor' | 'major'>('patch');
+  const [pushCommitMessage, setPushCommitMessage] = useState('');
+  const [pushForce, setPushForce] = useState(false);
+  const [isLoadingDiff, setIsLoadingDiff] = useState(false);
+  const [diffResult, setDiffResult] = useState<PushDiffResponse | null>(null);
+  const [diffError, setDiffError] = useState('');
+  const [selectedDiffPath, setSelectedDiffPath] = useState<string | null>(null);
+  const [diffFilterStatus, setDiffFilterStatus] = useState<'all' | 'modified' | 'added' | 'deleted'>('all');
+  const [isPushing, setIsPushing] = useState(false);
+  const [pushResult, setPushResult] = useState<PushResponse | null>(null);
+  const [pushError, setPushError] = useState('');
+  const [showTokenSettings, setShowTokenSettings] = useState(false);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('pcb_github_push_repo', pushRepoInput);
+    } catch {}
+  }, [pushRepoInput]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('pcb_github_push_branch', pushBranchInput);
+    } catch {}
+  }, [pushBranchInput]);
 
   // Запрос текущей локальной версии проекта
   const fetchProjectVersion = async () => {
@@ -317,11 +404,9 @@ export default function App() {
     }
   };
 
-  // Применение обновления или отката проекта
+  // Применение обновления проекта
   const applyProjectUpdate = async () => {
     if (!updateCheckResult?.latestCommit?.sha) return;
-
-    const isRollback = updateCheckResult.actionType === 'rollback' || updateCheckResult.versionDiffStatus === 'older';
 
     setIsApplyingUpdate(true);
     setUpdateError('');
@@ -335,33 +420,118 @@ export default function App() {
           repo: updateCheckResult.repo || gitHubRepoInput,
           branch: updateCheckResult.branch || 'main',
           commitSha: updateCheckResult.latestCommit.sha,
-          token: gitHubToken.trim() || undefined,
-          actionType: isRollback ? 'rollback' : 'update',
-          isRollback
+          token: gitHubToken.trim() || undefined
         })
       });
 
       const data = await resp.json();
       if (!resp.ok) {
-        setUpdateError(data.error || (isRollback ? 'Не удалось откатить проект' : 'Не удалось применить обновление проекта'));
+        setUpdateError(data.error || 'Не удалось применить обновление проекта');
         setIsApplyingUpdate(false);
         return;
       }
 
-      setUpdateSuccessMessage(data.message || (isRollback ? 'Проект успешно откачен к версии из репозитория' : 'Проект успешно обновлен'));
+      setUpdateSuccessMessage(data.message || 'Проект успешно обновлен');
       setUpdatedFilesList(data.updatedFiles || []);
       if (data.version) {
         setProjectVersion(data.version);
       }
       setUpdateCheckResult(prev => prev ? { ...prev, upToDate: true } : null);
 
-      setLogs(prev => prev + `\n[INFO] ${data.message}\n${isRollback ? 'Синхронизировано' : 'Обновлено'} компонентов:\n - ${(data.updatedFiles || []).join('\n - ')}\n`);
+      setLogs(prev => prev + `\n[INFO] ${data.message}\nОбновлено компонентов:\n - ${(data.updatedFiles || []).join('\n - ')}\n`);
       fetchFiles();
       fetchArtifacts();
     } catch (err: any) {
-      setUpdateError((isRollback ? 'Ошибка сети при откате проекта: ' : 'Ошибка сети при обновлении проекта: ') + err.message);
+      setUpdateError('Ошибка сети при обновлении проекта: ' + err.message);
     } finally {
       setIsApplyingUpdate(false);
+    }
+  };
+
+  // Запрос диффа правок для отправки в GitHub
+  const fetchPushDiff = async (overrideBumpType?: 'patch' | 'minor' | 'major') => {
+    setIsLoadingDiff(true);
+    setDiffError('');
+    setPushError('');
+    setPushResult(null);
+
+    const effectiveBump = overrideBumpType || pushBumpType;
+
+    try {
+      const resp = await fetch('/api/project/push-diff', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          repo: pushRepoInput.trim() || 'gregpost/pcb-ai-validator',
+          branch: pushBranchInput.trim() || 'main',
+          token: gitHubToken.trim(),
+          bumpType: effectiveBump
+        })
+      });
+
+      const data = await resp.json();
+      if (!resp.ok) {
+        throw new Error(data.error || `Ошибка получения диффа (${resp.status})`);
+      }
+
+      setDiffResult(data);
+      if (data.files && data.files.length > 0) {
+        if (!selectedDiffPath || !data.files.some((f: FileDiffResult) => f.path === selectedDiffPath)) {
+          setSelectedDiffPath(data.files[0].path);
+        }
+      } else {
+        setSelectedDiffPath(null);
+      }
+    } catch (err: any) {
+      setDiffError(err.message || 'Не удалось получить дифф изменений');
+    } finally {
+      setIsLoadingDiff(false);
+    }
+  };
+
+  // Выполнение отправки (Push) в GitHub с автоповышением версии
+  const handleExecutePush = async () => {
+    if (!gitHubToken.trim()) {
+      setPushError('Для отправки изменений укажите Personal Access Token (PAT) GitHub с правами на запись (scope "repo").');
+      setShowTokenSettings(true);
+      return;
+    }
+
+    setIsPushing(true);
+    setPushError('');
+    setPushResult(null);
+
+    try {
+      const resp = await fetch('/api/project/push', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          repo: pushRepoInput.trim() || 'gregpost/pcb-ai-validator',
+          branch: pushBranchInput.trim() || 'main',
+          token: gitHubToken.trim(),
+          commitMessage: pushCommitMessage.trim(),
+          bumpType: pushBumpType,
+          forcePush: pushForce
+        })
+      });
+
+      const data = await resp.json();
+      if (!resp.ok) {
+        throw new Error(data.error || `Ошибка отправки пуша (${resp.status})`);
+      }
+
+      setPushResult(data);
+      setPushCommitMessage('');
+
+      // Обновляем версию проекта в состоянии UI
+      await fetchProjectVersion();
+
+      // Запрашиваем обновленный дифф
+      await fetchPushDiff();
+    } catch (err: any) {
+      setPushError(err.message || 'Ошибка отправки пуша в GitHub');
+    } finally {
+      setIsPushing(false);
     }
   };
 
@@ -956,13 +1126,6 @@ export default function App() {
   const pdfCount = files.filter(f => f.type === 'pdf').length;
   const pinsCount = files.filter(f => f.type === 'txt').length;
   const pcbCount = files.filter(f => f.type === 'pcbdoc' || f.type === 'pcbsch').length;
-  const trimmedTarget = targetComponent.trim();
-  const hasMatchingPdf = files.some(
-    f => f.type === 'pdf' && trimmedTarget && f.name.replace(/\.pdf$/i, '').trim().toLowerCase() === trimmedTarget.toLowerCase()
-  );
-  const hasMatchingPins = files.some(
-    f => f.type === 'txt' && trimmedTarget && f.name.replace(/\.txt$/i, '').trim().toLowerCase() === trimmedTarget.toLowerCase()
-  );
 
   const runPipeline = async () => {
     const trimmedTarget = targetComponent.trim();
@@ -1262,13 +1425,7 @@ export default function App() {
                 onClick={runPipeline} 
                 disabled={isRunning || pcbCount === 0} 
                 className="w-full py-3 bg-[#2563eb] hover:bg-[#1d4ed8] text-white rounded-lg font-bold text-sm transition-all shadow-lg shadow-blue-900/20 active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2"
-                title={
-                  isRunning
-                    ? "Кнопка неактивна: пайплайн уже запущен и выполняется"
-                    : pcbCount === 0
-                      ? "Кнопка неактивна: не загружен файл печатной платы (.PcbDoc или .PcbSch). Загрузите файл во вкладке «Файлы»"
-                      : "Запустить пайплайн валидации проекта"
-                }
+                title={pcbCount === 0 ? "Для запуска пайплайна загрузите хотя бы один файл .PcbDoc" : undefined}
               >
                 <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
                 Запустить пайплайн
@@ -1283,190 +1440,6 @@ export default function App() {
                   <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/></svg>
                   Прервать пайплайн
                 </button>
-              )}
-            </div>
-
-            {/* Карточка-пояснение: Почему кнопка «Запустить пайплайн» неактивна */}
-            {(isRunning || pcbCount === 0) && (
-              <div className={`p-3 rounded-xl border text-xs space-y-2.5 transition-all shadow-md ${
-                isRunning 
-                  ? 'bg-[#0f1f38] border-blue-500/60 text-blue-200' 
-                  : 'bg-[#291808] border-amber-500/70 text-amber-200 shadow-amber-950/30'
-              }`}>
-                <div className="flex items-start gap-2.5">
-                  <span className="text-base flex-shrink-0 mt-0.5">
-                    {isRunning ? '⏳' : '⚠️'}
-                  </span>
-                  <div className="flex-1">
-                    <div className="font-bold text-xs flex items-center justify-between gap-1">
-                      <span className="text-white">Кнопка «Запустить пайплайн» неактивна</span>
-                      <span className={`text-[9px] font-mono uppercase px-1.5 py-0.5 rounded border font-bold ${
-                        isRunning ? 'bg-blue-900 text-blue-200 border-blue-600' : 'bg-amber-900 text-amber-200 border-amber-600'
-                      }`}>
-                        {isRunning ? 'Запущен' : 'Блокировка'}
-                      </span>
-                    </div>
-
-                    <div className="text-[11px] mt-1.5 leading-relaxed text-gray-200">
-                      {isRunning ? (
-                        <p>
-                          <span className="font-semibold text-white">Причина:</span> пайплайн анализа уже выполняется в данный момент (статус: <code className="font-mono text-amber-300 bg-black/50 px-1 py-0.5 rounded font-bold">{status}</code>). Повторный запуск заблокирован во избежание конфликтов перезаписи файлов.
-                        </p>
-                      ) : (
-                        <div className="space-y-1">
-                          <p>
-                            <span className="font-semibold text-amber-300">Причина:</span> в проекте <span className="underline decoration-amber-400 font-bold text-white">отсутствует файл печатной платы</span> (<code className="font-mono text-amber-300 bg-black/50 px-1 py-0.5 rounded font-bold">.PcbDoc</code> или <code className="font-mono text-amber-300 bg-black/50 px-1 py-0.5 rounded font-bold">.PcbSch</code>).
-                          </p>
-                          <p className="text-[10px] text-amber-200/80">
-                            Анализатор валидирует трассировку и цепи реальной платы Altium Designer, поэтому без файла платы запуск невозможен.
-                          </p>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                </div>
-
-                {/* Действие для разблокировки кнопки */}
-                {pcbCount === 0 && !isRunning && (
-                  <div className="pt-2 border-t border-amber-800/50 space-y-1.5">
-                    <button
-                      type="button"
-                      onClick={() => setSidebarTab('files')}
-                      className="w-full py-2 px-3 bg-gradient-to-r from-amber-600 to-amber-700 hover:from-amber-500 hover:to-amber-600 text-white rounded-lg text-xs font-bold transition-all shadow-md shadow-amber-950/50 flex items-center justify-center gap-1.5 active:scale-95 border border-amber-400/50"
-                    >
-                      <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>
-                      <span>Загрузить .PcbDoc во вкладке «Файлы» ➔</span>
-                    </button>
-                    <div className="text-[10px] text-gray-400 text-center">
-                      Либо синхронизируйте репозиторий через «Обновить код из GitHub»
-                    </div>
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* Интерактивный чек-лист готовности к запуску пайплайна */}
-            <div className="bg-[#141414] border border-[#262626] rounded-xl overflow-hidden text-xs">
-              <button
-                type="button"
-                onClick={() => setShowRequirementsHelp(prev => !prev)}
-                className="w-full p-2.5 flex items-center justify-between text-gray-300 hover:text-white transition-colors bg-[#181818]"
-              >
-                <span className="font-bold text-[11px] flex items-center gap-1.5">
-                  <span>📋</span>
-                  <span>Чек-лист готовности к запуску:</span>
-                </span>
-                <div className="flex items-center gap-2 font-mono text-[10px]">
-                  <span className={`px-1.5 py-0.5 rounded ${
-                    pcbCount > 0 && trimmedTarget && hasMatchingPdf && hasMatchingPins
-                      ? 'bg-emerald-950 text-emerald-300 border border-emerald-800'
-                      : 'bg-amber-950 text-amber-300 border border-amber-800'
-                  }`}>
-                    {pcbCount > 0 && trimmedTarget && hasMatchingPdf && hasMatchingPins ? 'Готов к запуску' : 'Не все условия'}
-                  </span>
-                  <span>{showRequirementsHelp ? '▲' : '▼'}</span>
-                </div>
-              </button>
-
-              {showRequirementsHelp && (
-                <div className="p-3 space-y-2 border-t border-[#262626] bg-[#121212] text-[11px]">
-                  <p className="text-gray-400 text-[10px]">
-                    Для полноценного запуска и прохождения всех этапов анализа требуются следующие данные:
-                  </p>
-
-                  <div className="space-y-1.5">
-                    {/* Требование 1: Файл платы */}
-                    <div className={`p-2 rounded-lg border flex items-center justify-between ${
-                      pcbCount > 0 ? 'bg-emerald-950/30 border-emerald-800/60 text-emerald-200' : 'bg-red-950/30 border-red-800/60 text-red-200'
-                    }`}>
-                      <div className="flex items-center gap-2">
-                        <span>{pcbCount > 0 ? '✓' : '✕'}</span>
-                        <div>
-                          <div className="font-bold">1. Файл платы (.PcbDoc или .PcbSch)</div>
-                          <div className="text-[10px] opacity-75">
-                            {pcbCount > 0 ? `Загружено файлов: ${pcbCount}` : 'Обязательно для разблокировки кнопки'}
-                          </div>
-                        </div>
-                      </div>
-                      {pcbCount === 0 && (
-                        <button
-                          type="button"
-                          onClick={() => setSidebarTab('files')}
-                          className="px-2 py-0.5 rounded bg-red-900/60 hover:bg-red-800 text-white text-[10px] font-bold"
-                        >
-                          Загрузить
-                        </button>
-                      )}
-                    </div>
-
-                    {/* Требование 2: Целевой компонент */}
-                    <div className={`p-2 rounded-lg border flex items-center justify-between ${
-                      trimmedTarget ? 'bg-emerald-950/30 border-emerald-800/60 text-emerald-200' : 'bg-amber-950/30 border-amber-800/60 text-amber-200'
-                    }`}>
-                      <div className="flex items-center gap-2">
-                        <span>{trimmedTarget ? '✓' : '✕'}</span>
-                        <div>
-                          <div className="font-bold">2. Целевой компонент (TARGET_COMPONENT)</div>
-                          <div className="text-[10px] opacity-75">
-                            {trimmedTarget ? `Указан: ${trimmedTarget}` : 'Введите имя чипа в поле ниже'}
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* Требование 3: PDF даташит */}
-                    <div className={`p-2 rounded-lg border flex items-center justify-between ${
-                      hasMatchingPdf ? 'bg-emerald-950/30 border-emerald-800/60 text-emerald-200' : 'bg-amber-950/30 border-amber-800/60 text-amber-200'
-                    }`}>
-                      <div className="flex items-center gap-2">
-                        <span>{hasMatchingPdf ? '✓' : '✕'}</span>
-                        <div>
-                          <div className="font-bold">3. PDF даташит компонента</div>
-                          <div className="text-[10px] opacity-75">
-                            {hasMatchingPdf 
-                              ? `Файл ${trimmedTarget}.pdf найден` 
-                              : `Требуется файл «${trimmedTarget || 'Компонент'}.pdf» в resources/datasheets/`}
-                          </div>
-                        </div>
-                      </div>
-                      {!hasMatchingPdf && (
-                        <button
-                          type="button"
-                          onClick={() => setSidebarTab('files')}
-                          className="px-2 py-0.5 rounded bg-amber-900/60 hover:bg-amber-800 text-white text-[10px] font-bold"
-                        >
-                          Загрузить
-                        </button>
-                      )}
-                    </div>
-
-                    {/* Требование 4: TXT распиновка */}
-                    <div className={`p-2 rounded-lg border flex items-center justify-between ${
-                      hasMatchingPins ? 'bg-emerald-950/30 border-emerald-800/60 text-emerald-200' : 'bg-amber-950/30 border-amber-800/60 text-amber-200'
-                    }`}>
-                      <div className="flex items-center gap-2">
-                        <span>{hasMatchingPins ? '✓' : '✕'}</span>
-                        <div>
-                          <div className="font-bold">4. TXT распиновка (ножки)</div>
-                          <div className="text-[10px] opacity-75">
-                            {hasMatchingPins 
-                              ? `Файл ${trimmedTarget}.txt найден` 
-                              : `Требуется файл «${trimmedTarget || 'Компонент'}.txt» в resources/pins/`}
-                          </div>
-                        </div>
-                      </div>
-                      {!hasMatchingPins && (
-                        <button
-                          type="button"
-                          onClick={() => setSidebarTab('files')}
-                          className="px-2 py-0.5 rounded bg-amber-900/60 hover:bg-amber-800 text-white text-[10px] font-bold"
-                        >
-                          Загрузить
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                </div>
               )}
             </div>
 
@@ -1601,17 +1574,32 @@ export default function App() {
               <p className="text-[10px] text-gray-400 font-sans truncate" title={projectVersion?.commitMessage || 'feat: initialize project source code'}>
                 {projectVersion?.commitMessage || 'feat: initialize project source code'}
               </p>
-              <button
-                type="button"
-                onClick={() => {
-                  setGitHubModalTab('update');
-                  setShowGitHubModal(true);
-                  checkProjectUpdate();
-                }}
-                className="w-full py-1.5 px-2 bg-[#1e2536] hover:bg-[#28324a] text-blue-300 hover:text-white border border-[#374563] rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-1.5 active:scale-95 shadow-sm"
-              >
-                <span>🔄 Обновить код из GitHub</span>
-              </button>
+              <div className="grid grid-cols-2 gap-1.5 pt-0.5">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setGitHubModalTab('update');
+                    setShowGitHubModal(true);
+                    checkProjectUpdate();
+                  }}
+                  className="py-1.5 px-2 bg-[#1e2536] hover:bg-[#28324a] text-blue-300 hover:text-white border border-[#374563] rounded-lg text-[11px] font-bold transition-all flex items-center justify-center gap-1 active:scale-95 shadow-sm"
+                  title="Проверить и скачать обновления из GitHub"
+                >
+                  <span>🔄 Pull / Синхр.</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setGitHubModalTab('push');
+                    setShowGitHubModal(true);
+                    fetchPushDiff();
+                  }}
+                  className="py-1.5 px-2 bg-gradient-to-r from-emerald-950/80 to-teal-950/80 hover:from-emerald-900 hover:to-teal-900 text-emerald-300 hover:text-white border border-emerald-700/60 rounded-lg text-[11px] font-bold transition-all flex items-center justify-center gap-1 active:scale-95 shadow-sm"
+                  title="Отправить изменения в GitHub с автоповышением версии"
+                >
+                  <span>🚀 Push & Diff</span>
+                </button>
+              </div>
             </div>
           </div>
         )}
@@ -1884,6 +1872,19 @@ export default function App() {
                   {artifacts.length}
                 </span>
               )}
+            </button>
+
+            <button
+              onClick={() => {
+                setGitHubModalTab('push');
+                setShowGitHubModal(true);
+                fetchPushDiff();
+              }}
+              className="px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 bg-[#14261f] hover:bg-[#1a332a] text-emerald-300 hover:text-white border border-emerald-700/60 shadow-sm active:scale-95"
+              title="Открыть построчный дифф правок и отправить Push в GitHub"
+            >
+              <span>🚀</span>
+              <span className="hidden sm:inline">Push & Diff</span>
             </button>
           </div>
         </header>
@@ -2472,6 +2473,32 @@ export default function App() {
 
               <button
                 type="button"
+                onClick={() => {
+                  setGitHubModalTab('push');
+                  if (!diffResult && !isLoadingDiff) {
+                    fetchPushDiff();
+                  }
+                }}
+                className={`py-3 px-3.5 text-xs font-bold transition-all border-b-2 flex items-center gap-2 ${
+                  gitHubModalTab === 'push'
+                    ? 'border-emerald-500 text-emerald-400'
+                    : 'border-transparent text-gray-400 hover:text-gray-200'
+                }`}
+              >
+                <span>🚀 Пуш в репозиторий & Diff</span>
+                {diffResult?.summary?.totalChanged !== undefined && (
+                  <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-mono border ${
+                    diffResult.summary.totalChanged > 0
+                      ? 'bg-emerald-950 text-emerald-300 border-emerald-700/80'
+                      : 'bg-gray-800 text-gray-400 border-gray-700'
+                  }`}>
+                    {diffResult.summary.totalChanged} изм.
+                  </span>
+                )}
+              </button>
+
+              <button
+                type="button"
                 onClick={() => setGitHubModalTab('files')}
                 className={`py-3 px-3.5 text-xs font-bold transition-all border-b-2 flex items-center gap-2 ${
                   gitHubModalTab === 'files'
@@ -2774,16 +2801,12 @@ export default function App() {
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                       {/* Критерий 1: Файл версии */}
                       <div className={`p-3 rounded-xl border flex items-center justify-between text-xs ${
-                        updateCheckResult.versionDiffStatus === 'older'
-                          ? 'bg-amber-950/40 border-amber-600/60 text-amber-200'
-                          : updateCheckResult.hasVersionDiff 
-                            ? 'bg-blue-950/40 border-blue-600/60 text-blue-200' 
-                            : 'bg-emerald-950/40 border-emerald-600/60 text-emerald-200'
+                        updateCheckResult.hasVersionDiff 
+                          ? 'bg-amber-950/40 border-amber-600/60 text-amber-200' 
+                          : 'bg-emerald-950/40 border-emerald-600/60 text-emerald-200'
                       }`}>
                         <div className="flex items-center gap-2">
-                          <span className="text-base">
-                            {updateCheckResult.versionDiffStatus === 'older' ? '⏪' : updateCheckResult.hasVersionDiff ? '⚡' : '✓'}
-                          </span>
+                          <span className="text-base">{updateCheckResult.hasVersionDiff ? '⚠️' : '✓'}</span>
                           <div>
                             <span className="font-bold block">Файл версии ({updateCheckResult.localAppVersion?.fileSource || 'version.json'})</span>
                             <span className="text-[11px] opacity-80">
@@ -2792,17 +2815,9 @@ export default function App() {
                           </div>
                         </div>
                         <span className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold ${
-                          updateCheckResult.versionDiffStatus === 'older'
-                            ? 'bg-amber-900 text-amber-200'
-                            : updateCheckResult.hasVersionDiff
-                              ? 'bg-blue-900 text-blue-200'
-                              : 'bg-emerald-900 text-emerald-200'
+                          updateCheckResult.hasVersionDiff ? 'bg-amber-900 text-amber-200' : 'bg-emerald-900 text-emerald-200'
                         }`}>
-                          {updateCheckResult.versionDiffStatus === 'older'
-                            ? 'Старая в репо'
-                            : updateCheckResult.hasVersionDiff
-                              ? 'Новая версия'
-                              : 'Актуальна'}
+                          {updateCheckResult.hasVersionDiff ? 'Новая версия' : 'Актуальна'}
                         </span>
                       </div>
 
@@ -2863,165 +2878,753 @@ export default function App() {
                           </button>
                         </div>
                       </div>
-                    ) : (() => {
-                      const isRollback = updateCheckResult.actionType === 'rollback' || updateCheckResult.versionDiffStatus === 'older';
-                      return (
-                        <div className={`p-5 rounded-2xl space-y-4 shadow-xl ${
-                          isRollback 
-                            ? 'bg-[#231509] border-2 border-amber-600/70 shadow-amber-950/40' 
-                            : 'bg-[#0f1d2e] border-2 border-blue-500/60 shadow-blue-950/40'
-                        }`}>
-                          <div className="flex items-start gap-3">
-                            <div className={`w-10 h-10 rounded-xl border flex items-center justify-center font-bold text-xl flex-shrink-0 mt-0.5 ${
-                              isRollback
-                                ? 'bg-amber-950 border-amber-500 text-amber-300'
-                                : 'bg-blue-950 border-blue-500 text-blue-300'
-                            }`}>
-                              {isRollback ? '⏪' : '⚡'}
-                            </div>
-                            <div className="flex-1">
-                              <h3 className={`text-base font-bold flex flex-wrap items-center gap-2 ${
-                                isRollback ? 'text-amber-300' : 'text-blue-300'
-                              }`}>
-                                {isRollback ? 'В репозитории более старая версия (доступен откат)' : 'Доступно обновление проекта с GitHub!'}
-                                {updateCheckResult.remoteAppVersion && (
-                                  <span className={`text-xs font-mono px-2 py-0.5 rounded-full border ${
-                                    isRollback 
-                                      ? 'bg-amber-950 text-amber-200 border-amber-700' 
-                                      : 'bg-blue-950 text-blue-200 border-blue-700'
-                                  }`}>
-                                    v{updateCheckResult.remoteAppVersion.version}
-                                  </span>
-                                )}
-                                {updateCheckResult.diffFiles && updateCheckResult.diffFiles.length > 0 && (
-                                  <span className="text-xs font-mono px-2 py-0.5 rounded-full bg-gray-900 text-gray-200 border border-gray-700">
-                                    {updateCheckResult.diffFiles.length} измененных файлов
-                                  </span>
-                                )}
-                              </h3>
-                              <p className={`text-xs mt-1 ${isRollback ? 'text-amber-200/90' : 'text-blue-200/90'}`}>
-                                {updateCheckResult.versionComparisonMessage 
-                                  ? updateCheckResult.versionComparisonMessage
-                                  : isRollback
-                                    ? `В репозитории GitHub обнаружена версия v${updateCheckResult.remoteAppVersion?.version || ''}, которая старше локальной. Вы можете откатить проект к версии из репозитория.`
-                                    : 'В репозитории GitHub найдены обновления кода по сравнению с локальной установкой. Доступно обновление.'}
-                              </p>
-                            </div>
+                    ) : (
+                      /* СЛУЧАЙ 2: Версии НЕ совпадают (доступно обновление) */
+                      <div className="p-5 bg-[#231709] border-2 border-amber-500/60 rounded-2xl space-y-4 shadow-xl shadow-amber-950/30">
+                        <div className="flex items-start gap-3">
+                          <div className="w-10 h-10 rounded-xl bg-amber-950 border border-amber-500 text-amber-300 flex items-center justify-center font-bold text-xl flex-shrink-0 mt-0.5">
+                            ⚡
                           </div>
-
-                          {/* Список файлов с различиями в коде (diff) */}
-                          {updateCheckResult.diffFiles && updateCheckResult.diffFiles.length > 0 && (
-                            <div className="space-y-1.5">
-                              <h4 className="text-xs font-bold text-gray-300 flex items-center gap-1.5 uppercase tracking-wider">
-                                <span>Различия в коде (Diff файлов):</span>
-                                <span className="text-gray-400 font-normal">({updateCheckResult.diffFiles.length} файлов)</span>
-                              </h4>
-                              <div className="max-h-36 overflow-y-auto space-y-1 bg-[#0b0f17] border border-gray-800 p-2.5 rounded-xl font-mono text-xs">
-                                {updateCheckResult.diffFiles.map((df, i) => (
-                                  <div key={i} className="flex items-center justify-between text-[11px] py-0.5 px-1.5 rounded hover:bg-gray-800/40">
-                                    <span className="text-gray-200">{df.path}</span>
-                                    <span className={`px-1.5 py-0.2 rounded text-[10px] ${
-                                      df.status === 'added' ? 'bg-emerald-950 text-emerald-300 border border-emerald-800' : 'bg-amber-950 text-amber-300 border border-amber-800'
-                                    }`}>
-                                      {df.status === 'added' ? 'новый' : 'изменен'}
-                                    </span>
-                                  </div>
-                                ))}
-                              </div>
-                            </div>
-                          )}
-
-                          {/* Сообщения Git-коммитов */}
-                          <div className="space-y-2">
-                            <h4 className="text-xs font-bold text-gray-300 flex items-center gap-1.5 uppercase tracking-wider">
-                              <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>
-                              Сообщения Git (список коммитов):
-                            </h4>
-
-                            <div className="max-h-48 overflow-y-auto space-y-2 bg-[#0b0f17] border border-gray-800 p-3 rounded-xl font-mono text-xs">
-                              {updateCheckResult.commitsAhead && updateCheckResult.commitsAhead.length > 0 ? (
-                                updateCheckResult.commitsAhead.map((c, i) => (
-                                  <div key={i} className="p-2 bg-[#141a27] border border-gray-800 rounded-lg space-y-1">
-                                    <div className="flex items-center justify-between text-[11px]">
-                                      <span className="text-amber-400 font-bold">{c.sha.slice(0, 7)}</span>
-                                      <span className="text-gray-400">{c.author} • {c.date ? new Date(c.date).toLocaleString('ru-RU') : ''}</span>
-                                    </div>
-                                    <p className="text-gray-200 font-sans text-xs">{c.message}</p>
-                                  </div>
-                                ))
-                              ) : (
-                                <div className="p-2 bg-[#141a27] border border-gray-800 rounded-lg space-y-1">
-                                  <div className="flex items-center justify-between text-[11px]">
-                                    <span className="text-amber-400 font-bold">{updateCheckResult.latestCommit.sha.slice(0, 7)}</span>
-                                    <span className="text-gray-400">{updateCheckResult.latestCommit.author}</span>
-                                  </div>
-                                  <p className="text-gray-200 font-sans text-xs">{updateCheckResult.latestCommit.message}</p>
-                                </div>
+                          <div className="flex-1">
+                            <h3 className="text-base font-bold text-amber-300 flex items-center gap-2">
+                              Доступно обновление проекта с GitHub!
+                              {updateCheckResult.hasVersionDiff && updateCheckResult.remoteAppVersion && (
+                                <span className="text-xs font-mono px-2 py-0.5 rounded-full bg-amber-950 text-amber-200 border border-amber-700">
+                                  v{updateCheckResult.remoteAppVersion.version}
+                                </span>
                               )}
-                            </div>
-                          </div>
-
-                          {/* Кнопки подтверждения и отмены */}
-                          <div className="pt-3 border-t border-gray-800 flex flex-col sm:flex-row items-center justify-between gap-3">
-                            <p className="text-[11px] text-gray-400">
-                              {isRollback 
-                                ? <>Откат синхронизирует python-скрипты <code className="text-amber-300">graph/</code>, <code className="text-amber-300">pcb_to_netlist/</code>, <code className="text-amber-300">huge_file/</code> с версией из репозитория.</>
-                                : <>Обновление затронет python-скрипты <code className="text-blue-300">graph/</code>, <code className="text-blue-300">pcb_to_netlist/</code>, <code className="text-blue-300">huge_file/</code> и конфигурации.</>}
+                              {updateCheckResult.diffFiles && updateCheckResult.diffFiles.length > 0 && (
+                                <span className="text-xs font-mono px-2 py-0.5 rounded-full bg-amber-950 text-amber-200 border border-amber-700">
+                                  {updateCheckResult.diffFiles.length} измененных файлов
+                                </span>
+                              )}
+                            </h3>
+                            <p className="text-xs text-amber-200/90 mt-1">
+                              {updateCheckResult.hasVersionDiff 
+                                ? updateCheckResult.versionComparisonMessage 
+                                : 'В репозитории GitHub найдены обновления кода по сравнению с локальной установкой.'}
                             </p>
-
-                            <div className="flex items-center gap-3 w-full sm:w-auto">
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setUpdateCheckResult(null);
-                                  setUpdateError('');
-                                }}
-                                disabled={isApplyingUpdate}
-                                className="flex-1 sm:flex-none px-4 py-2.5 bg-gray-900 hover:bg-gray-800 text-gray-300 hover:text-white rounded-xl text-xs font-bold transition-all border border-gray-700 active:scale-95"
-                              >
-                                {isRollback ? '✕ Оставить текущую версию' : '✕ Отменить'}
-                              </button>
-
-                              <button
-                                type="button"
-                                onClick={() => applyProjectUpdate()}
-                                disabled={isApplyingUpdate}
-                                className={`flex-1 sm:flex-none px-6 py-2.5 rounded-xl text-xs font-black transition-all shadow-xl flex items-center justify-center gap-2 active:scale-95 border ${
-                                  isRollback
-                                    ? 'bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-500 hover:to-orange-500 text-white shadow-amber-950/60 border-amber-400/80'
-                                    : 'bg-gradient-to-r from-emerald-600 to-green-600 hover:from-emerald-500 hover:to-green-500 text-white shadow-green-950/60 border-emerald-400/80'
-                                }`}
-                              >
-                                {isApplyingUpdate ? (
-                                  <>
-                                    <svg className="animate-spin w-4 h-4 text-white" viewBox="0 0 24 24" fill="none">
-                                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                                    </svg>
-                                    <span>{isRollback ? 'Выполняется откат...' : 'Обновление...'}</span>
-                                  </>
-                                ) : (
-                                  <>
-                                    <span>{isRollback ? '⏪' : '✓'}</span>
-                                    <span>
-                                      {isRollback 
-                                        ? `Утвердить откат до v${updateCheckResult.remoteAppVersion?.version || 'репозитория'}`
-                                        : 'Утвердить обновление проекта'}
-                                    </span>
-                                  </>
-                                )}
-                              </button>
-                            </div>
                           </div>
                         </div>
-                      );
-                    })()}
+
+                        {/* Список файлов с различиями в коде (diff) */}
+                        {updateCheckResult.diffFiles && updateCheckResult.diffFiles.length > 0 && (
+                          <div className="space-y-1.5">
+                            <h4 className="text-xs font-bold text-amber-300 flex items-center gap-1.5 uppercase tracking-wider">
+                              <span>Различия в коде (Diff файлов):</span>
+                              <span className="text-gray-400 font-normal">({updateCheckResult.diffFiles.length} файлов)</span>
+                            </h4>
+                            <div className="max-h-36 overflow-y-auto space-y-1 bg-[#120d05] border border-amber-900/50 p-2.5 rounded-xl font-mono text-xs">
+                              {updateCheckResult.diffFiles.map((df, i) => (
+                                <div key={i} className="flex items-center justify-between text-[11px] py-0.5 px-1.5 rounded hover:bg-amber-950/40">
+                                  <span className="text-gray-200">{df.path}</span>
+                                  <span className={`px-1.5 py-0.2 rounded text-[10px] ${
+                                    df.status === 'added' ? 'bg-emerald-950 text-emerald-300 border border-emerald-800' : 'bg-amber-950 text-amber-300 border border-amber-800'
+                                  }`}>
+                                    {df.status === 'added' ? 'новый' : 'изменен'}
+                                  </span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Сообщения Git-коммитов */}
+                        <div className="space-y-2">
+                          <h4 className="text-xs font-bold text-amber-200/90 flex items-center gap-1.5 uppercase tracking-wider">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>
+                            Сообщения Git (список коммитов):
+                          </h4>
+
+                          <div className="max-h-48 overflow-y-auto space-y-2 bg-[#120d05] border border-amber-900/50 p-3 rounded-xl font-mono text-xs">
+                            {updateCheckResult.commitsAhead && updateCheckResult.commitsAhead.length > 0 ? (
+                              updateCheckResult.commitsAhead.map((c, i) => (
+                                <div key={i} className="p-2 bg-[#1c1409] border border-amber-900/40 rounded-lg space-y-1">
+                                  <div className="flex items-center justify-between text-[11px]">
+                                    <span className="text-amber-400 font-bold">{c.sha.slice(0, 7)}</span>
+                                    <span className="text-gray-400">{c.author} • {c.date ? new Date(c.date).toLocaleString('ru-RU') : ''}</span>
+                                  </div>
+                                  <p className="text-gray-200 font-sans text-xs">{c.message}</p>
+                                </div>
+                              ))
+                            ) : (
+                              <div className="p-2 bg-[#1c1409] border border-amber-900/40 rounded-lg space-y-1">
+                                <div className="flex items-center justify-between text-[11px]">
+                                  <span className="text-amber-400 font-bold">{updateCheckResult.latestCommit.sha.slice(0, 7)}</span>
+                                  <span className="text-gray-400">{updateCheckResult.latestCommit.author}</span>
+                                </div>
+                                <p className="text-gray-200 font-sans text-xs">{updateCheckResult.latestCommit.message}</p>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Кнопки подтверждения и отмены */}
+                        <div className="pt-3 border-t border-amber-900/50 flex flex-col sm:flex-row items-center justify-between gap-3">
+                          <p className="text-[11px] text-amber-300/80">
+                            Обновление затронет python-скрипты <code className="text-amber-200">graph/</code>, <code className="text-amber-200">pcb_to_netlist/</code>, <code className="text-amber-200">huge_file/</code> и конфигурации.
+                          </p>
+
+                          <div className="flex items-center gap-3 w-full sm:w-auto">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setUpdateCheckResult(null);
+                                setUpdateError('');
+                              }}
+                              disabled={isApplyingUpdate}
+                              className="flex-1 sm:flex-none px-4 py-2.5 bg-[#2a1c0d] hover:bg-[#382613] text-gray-300 hover:text-white rounded-xl text-xs font-bold transition-all border border-amber-900/60 active:scale-95"
+                            >
+                              ✕ Отменить
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={() => applyProjectUpdate()}
+                              disabled={isApplyingUpdate}
+                              className="flex-1 sm:flex-none px-6 py-2.5 bg-gradient-to-r from-emerald-600 to-green-600 hover:from-emerald-500 hover:to-green-500 text-white rounded-xl text-xs font-black transition-all shadow-xl shadow-green-950/60 flex items-center justify-center gap-2 active:scale-95 border border-emerald-400/80"
+                            >
+                              {isApplyingUpdate ? (
+                                <>
+                                  <svg className="animate-spin w-4 h-4 text-white" viewBox="0 0 24 24" fill="none">
+                                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                  </svg>
+                                  <span>Обновление...</span>
+                                </>
+                              ) : (
+                                <>
+                                  <span>✓</span>
+                                  <span>Утвердить обновление проекта</span>
+                                </>
+                              )}
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
             )}
 
-            {/* ВКЛАДКА 2: ПОИСК И СКАЧИВАНИЕ ФАЙЛОВ */}
+            {/* ВКЛАДКА 2: ПУШ В РЕПОЗИТОРИЙ И ДИФФ ПРАВОК */}
+            {gitHubModalTab === 'push' && (
+              <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-5">
+                {/* 1. Блок настройки целевого репозитория и ветки */}
+                <div className="bg-[#141722] border border-[#242b3d] rounded-2xl p-4 sm:p-5 space-y-4">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                    <div>
+                      <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                        <span>🚀</span>
+                        <span>Параметры отправки (Push) в GitHub</span>
+                      </h3>
+                      <p className="text-xs text-gray-400 mt-0.5">
+                        Отправка локальных изменений проекта в заданный репозиторий с автоматическим инкрементом версии
+                      </p>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => fetchPushDiff()}
+                      disabled={isLoadingDiff}
+                      className="px-3.5 py-1.5 bg-[#1f283d] hover:bg-[#283552] text-blue-300 hover:text-white border border-[#3b4b73] rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 active:scale-95 shadow-sm disabled:opacity-50"
+                    >
+                      <svg className={`w-3.5 h-3.5 ${isLoadingDiff ? 'animate-spin' : ''}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/>
+                      </svg>
+                      <span>{isLoadingDiff ? 'Сравнение...' : 'Обновить Diff'}</span>
+                    </button>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-1">
+                    <div>
+                      <label className="block text-[11px] font-bold text-gray-300 mb-1">
+                        Целевой репозиторий GitHub:
+                      </label>
+                      <div className="relative">
+                        <input
+                          type="text"
+                          value={pushRepoInput}
+                          onChange={(e) => setPushRepoInput(e.target.value)}
+                          placeholder="owner/repo (напр. gregpost/pcb-ai-validator)"
+                          className="w-full bg-[#0d1017] border border-[#283248] focus:border-emerald-500 rounded-xl px-3.5 py-2 text-xs font-mono text-white placeholder-gray-600 focus:outline-none transition-colors"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setPushRepoInput('gregpost/pcb-ai-validator')}
+                          className="absolute right-2 top-1/2 -translate-y-1/2 text-[10px] text-gray-500 hover:text-blue-300 font-mono px-1.5 py-0.5 rounded bg-[#181d28] border border-[#2c374e]"
+                          title="Вернуть репозиторий по умолчанию"
+                        >
+                          default
+                        </button>
+                      </div>
+                      <span className="text-[10px] text-gray-500 mt-1 block">
+                        По умолчанию: <code className="text-gray-400">gregpost/pcb-ai-validator</code>
+                      </span>
+                    </div>
+
+                    <div>
+                      <label className="block text-[11px] font-bold text-gray-300 mb-1">
+                        Ветка (Branch):
+                      </label>
+                      <input
+                        type="text"
+                        value={pushBranchInput}
+                        onChange={(e) => setPushBranchInput(e.target.value)}
+                        placeholder="main"
+                        className="w-full bg-[#0d1017] border border-[#283248] focus:border-emerald-500 rounded-xl px-3.5 py-2 text-xs font-mono text-white placeholder-gray-600 focus:outline-none transition-colors"
+                      />
+                      <span className="text-[10px] text-gray-500 mt-1 block">
+                        Ветка для отправки коммита (обычно <code className="text-gray-400">main</code>)
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Настройка Personal Access Token */}
+                  <div className="pt-2 border-t border-[#1f2636]">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs font-bold text-gray-300">GitHub Personal Access Token (PAT):</span>
+                        {gitHubToken ? (
+                          <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-950 text-emerald-300 border border-emerald-800 flex items-center gap-1">
+                            <span>✓</span>
+                            <span>Токен настроен</span>
+                          </span>
+                        ) : (
+                          <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-950 text-amber-300 border border-amber-800 flex items-center gap-1">
+                            <span>!</span>
+                            <span>Требуется для пуша</span>
+                          </span>
+                        )}
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={() => setShowTokenSettings(!showTokenSettings)}
+                        className="text-xs text-blue-400 hover:text-blue-300 underline font-medium self-start sm:self-auto"
+                      >
+                        {showTokenSettings ? 'Скрыть поле токена' : gitHubToken ? 'Изменить токен' : 'Ввести токен PAT'}
+                      </button>
+                    </div>
+
+                    {showTokenSettings && (
+                      <div className="mt-3 p-3 bg-[#0d1017] border border-[#232c3f] rounded-xl space-y-2">
+                        <input
+                          type="password"
+                          value={gitHubToken}
+                          onChange={(e) => setGitHubToken(e.target.value)}
+                          placeholder="ghp_xxxxxxxxxxxxxxxxxxxx (GitHub Personal Access Token)"
+                          className="w-full bg-[#141824] border border-[#2b364e] focus:border-emerald-500 rounded-lg px-3 py-1.5 text-xs font-mono text-white placeholder-gray-600 focus:outline-none"
+                        />
+                        <div className="flex flex-wrap items-center justify-between text-[11px] text-gray-400 gap-2">
+                          <span>
+                            Токен должен иметь права <code className="text-emerald-400 font-mono">repo</code> (или fine-grained: <code className="text-emerald-400 font-mono">Contents: Read and write</code>).
+                          </span>
+                          <a
+                            href="https://github.com/settings/tokens/new?scopes=repo&description=PCB+AI+Validator+Sync"
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-blue-400 hover:text-blue-300 underline flex items-center gap-1"
+                          >
+                            <span>Создать токен на GitHub</span>
+                            <span>↗</span>
+                          </a>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* 2. Блок автоматического повышения версии (Version Bumping) */}
+                <div className="bg-gradient-to-r from-[#121926] via-[#141e2a] to-[#121926] border border-[#243547] rounded-2xl p-4 sm:p-5 space-y-3 shadow-lg">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-base">🏷️</span>
+                        <h4 className="text-xs font-bold uppercase tracking-wider text-blue-300">
+                          Автоматическое повышение версии при каждом пуше
+                        </h4>
+                      </div>
+                      <p className="text-[11px] text-gray-400 mt-1">
+                        При отправке коммита файлы <code className="text-gray-300">version.json</code>, <code className="text-gray-300">VERSION</code> и <code className="text-gray-300">package.json</code> будут автоматически обновлены
+                      </p>
+                    </div>
+
+                    {/* Визуальная плашка версий */}
+                    <div className="flex items-center gap-2 bg-[#0c131c] border border-[#203144] px-3.5 py-2 rounded-xl font-mono text-xs shadow-inner">
+                      <div className="text-right">
+                        <div className="text-[9px] uppercase tracking-wider text-gray-500">Текущая</div>
+                        <div className="text-gray-300 font-bold">
+                          v{diffResult?.currentVersion || projectVersion?.appVersion || '1.0.1'}
+                        </div>
+                      </div>
+
+                      <div className="text-emerald-400 font-black px-1">➔</div>
+
+                      <div>
+                        <div className="text-[9px] uppercase tracking-wider text-emerald-400 font-bold">Новая версия</div>
+                        <div className="text-emerald-300 font-black text-sm">
+                          v{diffResult?.nextVersion || '1.0.2'}
+                          <span className="text-[10px] text-emerald-500 ml-1">
+                            (#{diffResult?.nextBuild || 2})
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Переключатель инкремента версии */}
+                  <div className="flex flex-wrap items-center gap-2 pt-1 text-xs">
+                    <span className="text-gray-400 font-medium">Тип инкремента:</span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setPushBumpType('patch');
+                        fetchPushDiff('patch');
+                      }}
+                      className={`px-3 py-1.5 rounded-lg font-mono font-bold transition-all border ${
+                        pushBumpType === 'patch'
+                          ? 'bg-emerald-950 text-emerald-300 border-emerald-600 shadow-sm'
+                          : 'bg-[#151c27] text-gray-400 border-[#273449] hover:text-white'
+                      }`}
+                    >
+                      Патч (+0.0.1) — багфиксы
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setPushBumpType('minor');
+                        fetchPushDiff('minor');
+                      }}
+                      className={`px-3 py-1.5 rounded-lg font-mono font-bold transition-all border ${
+                        pushBumpType === 'minor'
+                          ? 'bg-blue-950 text-blue-300 border-blue-600 shadow-sm'
+                          : 'bg-[#151c27] text-gray-400 border-[#273449] hover:text-white'
+                      }`}
+                    >
+                      Минор (+0.1.0) — новые фичи
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setPushBumpType('major');
+                        fetchPushDiff('major');
+                      }}
+                      className={`px-3 py-1.5 rounded-lg font-mono font-bold transition-all border ${
+                        pushBumpType === 'major'
+                          ? 'bg-purple-950 text-purple-300 border-purple-600 shadow-sm'
+                          : 'bg-[#151c27] text-gray-400 border-[#273449] hover:text-white'
+                      }`}
+                    >
+                      Мажор (+1.0.0) — ключевой релиз
+                    </button>
+                  </div>
+                </div>
+
+                {/* Сообщения об ошибках или успехе */}
+                {diffError && (
+                  <div className="p-4 bg-red-950/50 border border-red-800/80 rounded-2xl text-xs text-red-200 space-y-2">
+                    <div className="font-bold flex items-center gap-1.5 text-red-300">
+                      <span>✕</span>
+                      <span>Ошибка при вычислении различий:</span>
+                    </div>
+                    <p className="font-mono text-[11px]">{diffError}</p>
+                    <button
+                      type="button"
+                      onClick={() => fetchPushDiff()}
+                      className="px-3 py-1 bg-red-900/60 hover:bg-red-800 text-white rounded-lg font-bold text-xs"
+                    >
+                      Повторить попытку
+                    </button>
+                  </div>
+                )}
+
+                {pushError && (
+                  <div className="p-4 bg-red-950/60 border border-red-800 rounded-2xl text-xs text-red-200 space-y-2 animate-shake">
+                    <div className="font-bold flex items-center gap-1.5 text-red-300">
+                      <span>✕</span>
+                      <span>Не удалось отправить изменения:</span>
+                    </div>
+                    <p className="font-mono text-[11px] whitespace-pre-wrap">{pushError}</p>
+                  </div>
+                )}
+
+                {pushResult?.success && (
+                  <div className="p-4 bg-emerald-950/60 border border-emerald-700 rounded-2xl text-xs text-emerald-200 space-y-2 animate-fadeIn shadow-lg shadow-emerald-950/40">
+                    <div className="font-bold text-sm text-emerald-300 flex items-center gap-2">
+                      <span>🎉</span>
+                      <span>Изменения успешно отправлены на GitHub!</span>
+                    </div>
+                    <p className="text-gray-300">{pushResult.message}</p>
+                    <div className="flex flex-wrap items-center gap-3 pt-1">
+                      {pushResult.commitUrl && (
+                        <a
+                          href={pushResult.commitUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="px-3.5 py-1.5 bg-emerald-800 hover:bg-emerald-700 text-white rounded-xl font-bold flex items-center gap-1.5 shadow transition-all active:scale-95"
+                        >
+                          <span>Открыть коммит {pushResult.shortSha} на GitHub</span>
+                          <span>↗</span>
+                        </a>
+                      )}
+                      <span className="font-mono text-emerald-400 bg-emerald-900/60 px-2 py-1 rounded border border-emerald-700/60">
+                        Новая версия: v{pushResult.newVersion} (#{pushResult.newBuild})
+                      </span>
+                    </div>
+                  </div>
+                )}
+
+                {/* 3. Сводка различий (Diff Summary) и фильтрация */}
+                {isLoadingDiff ? (
+                  <div className="p-8 bg-[#141722] border border-[#242b3d] rounded-2xl text-center space-y-3">
+                    <div className="w-8 h-8 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin mx-auto"></div>
+                    <p className="text-xs text-gray-300 font-medium">
+                      Сравнение локальных файлов проекта с веткой {pushBranchInput} репозитория {pushRepoInput}...
+                    </p>
+                    <span className="text-[10px] text-gray-500 font-mono">
+                      Вычисление хэшей Git blob и построчный расчет изменений
+                    </span>
+                  </div>
+                ) : diffResult ? (
+                  <div className="space-y-4">
+                    {/* Статистическая плашка диффа */}
+                    <div className="bg-[#141722] border border-[#242b3d] rounded-2xl p-4 flex flex-wrap items-center justify-between gap-3">
+                      <div className="flex flex-wrap items-center gap-2 font-mono text-xs">
+                        <span className="px-2.5 py-1 rounded-lg bg-[#1e2536] text-white font-bold border border-[#2d3a54]">
+                          Изменено файлов: {diffResult.summary.totalChanged}
+                        </span>
+                        <span className="px-2.5 py-1 rounded-lg bg-emerald-950/70 text-emerald-300 font-bold border border-emerald-800/80">
+                          +{diffResult.summary.additions} строк
+                        </span>
+                        <span className="px-2.5 py-1 rounded-lg bg-rose-950/70 text-rose-300 font-bold border border-rose-800/80">
+                          -{diffResult.summary.deletions} строк
+                        </span>
+                      </div>
+
+                      {/* Фильтры по типу изменений */}
+                      <div className="flex items-center gap-1.5 text-xs">
+                        <button
+                          type="button"
+                          onClick={() => setDiffFilterStatus('all')}
+                          className={`px-2.5 py-1 rounded-lg font-medium transition-all ${
+                            diffFilterStatus === 'all'
+                              ? 'bg-blue-600 text-white'
+                              : 'bg-[#1b2130] text-gray-400 hover:text-white'
+                          }`}
+                        >
+                          Все ({diffResult.summary.totalChanged})
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setDiffFilterStatus('modified')}
+                          className={`px-2.5 py-1 rounded-lg font-medium transition-all ${
+                            diffFilterStatus === 'modified'
+                              ? 'bg-amber-600 text-white'
+                              : 'bg-[#1b2130] text-gray-400 hover:text-white'
+                          }`}
+                        >
+                          Измененные ({diffResult.summary.modifiedCount})
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setDiffFilterStatus('added')}
+                          className={`px-2.5 py-1 rounded-lg font-medium transition-all ${
+                            diffFilterStatus === 'added'
+                              ? 'bg-emerald-600 text-white'
+                              : 'bg-[#1b2130] text-gray-400 hover:text-white'
+                          }`}
+                        >
+                          Новые ({diffResult.summary.addedCount})
+                        </button>
+                        {diffResult.summary.deletedCount > 0 && (
+                          <button
+                            type="button"
+                            onClick={() => setDiffFilterStatus('deleted')}
+                            className={`px-2.5 py-1 rounded-lg font-medium transition-all ${
+                              diffFilterStatus === 'deleted'
+                                ? 'bg-rose-600 text-white'
+                                : 'bg-[#1b2130] text-gray-400 hover:text-white'
+                            }`}
+                          >
+                            Удаленные ({diffResult.summary.deletedCount})
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Если изменений нет */}
+                    {diffResult.summary.totalChanged === 0 ? (
+                      <div className="p-8 bg-[#141722] border border-[#242b3d] rounded-2xl text-center space-y-2">
+                        <div className="text-3xl">✨</div>
+                        <h4 className="text-sm font-bold text-emerald-400">
+                          Все файлы полностью совпадают с GitHub!
+                        </h4>
+                        <p className="text-xs text-gray-400 max-w-md mx-auto">
+                          Локальный код идентичен ветке <code className="text-gray-300 font-mono">{diffResult.branch}</code> репозитория <code className="text-gray-300 font-mono">{diffResult.repo}</code>. Новых правок для коммита не обнаружено.
+                        </p>
+                      </div>
+                    ) : (
+                      /* Основной блок просмотра диффа */
+                      <div className="bg-[#10131a] border border-[#242b3d] rounded-2xl overflow-hidden grid grid-cols-1 lg:grid-cols-12 min-h-[460px] max-h-[600px]">
+                        {/* Левая колонка: список измененных файлов */}
+                        <div className="lg:col-span-4 border-b lg:border-b-0 lg:border-r border-[#242b3d] bg-[#121620] flex flex-col min-h-0 overflow-hidden">
+                          <div className="p-3 bg-[#151924] border-b border-[#242b3d] flex items-center justify-between text-xs font-bold text-gray-300">
+                            <span>Файлы с отличиями</span>
+                            <span className="text-[10px] text-gray-500 font-mono">
+                              {diffResult.files.filter(f => diffFilterStatus === 'all' || f.status === diffFilterStatus).length} шт.
+                            </span>
+                          </div>
+
+                          <div className="flex-1 overflow-y-auto divide-y divide-[#1b2233]">
+                            {diffResult.files
+                              .filter(f => diffFilterStatus === 'all' || f.status === diffFilterStatus)
+                              .map((file) => {
+                                const isSelected = selectedDiffPath === file.path;
+                                let badgeBg = 'bg-amber-950/80 text-amber-300 border-amber-800';
+                                let badgeText = 'M';
+                                if (file.status === 'added') {
+                                  badgeBg = 'bg-emerald-950/80 text-emerald-300 border-emerald-800';
+                                  badgeText = 'A';
+                                } else if (file.status === 'deleted') {
+                                  badgeBg = 'bg-rose-950/80 text-rose-300 border-rose-800';
+                                  badgeText = 'D';
+                                }
+
+                                return (
+                                  <button
+                                    key={file.path}
+                                    type="button"
+                                    onClick={() => setSelectedDiffPath(file.path)}
+                                    className={`w-full text-left p-2.5 transition-colors flex items-center justify-between gap-2 text-xs font-mono ${
+                                      isSelected
+                                        ? 'bg-[#1e2638] text-white border-l-4 border-emerald-500'
+                                        : 'text-gray-300 hover:bg-[#161c28]'
+                                    }`}
+                                  >
+                                    <div className="flex items-center gap-2 min-w-0 flex-1">
+                                      <span className={`w-5 h-5 rounded flex items-center justify-center font-bold text-[10px] border flex-shrink-0 ${badgeBg}`}>
+                                        {badgeText}
+                                      </span>
+                                      <span className="truncate text-[11px]" title={file.path}>
+                                        {file.path}
+                                      </span>
+                                    </div>
+
+                                    {!file.isBinary && (file.additions > 0 || file.deletions > 0) && (
+                                      <div className="flex items-center gap-1 text-[10px] flex-shrink-0">
+                                        {file.additions > 0 && (
+                                          <span className="text-emerald-400">+{file.additions}</span>
+                                        )}
+                                        {file.deletions > 0 && (
+                                          <span className="text-rose-400">-{file.deletions}</span>
+                                        )}
+                                      </div>
+                                    )}
+                                  </button>
+                                );
+                              })}
+                          </div>
+                        </div>
+
+                        {/* Правая колонка: построчный просмотр изменений выбранного файла */}
+                        <div className="lg:col-span-8 flex flex-col min-h-0 bg-[#0d1017] overflow-hidden">
+                          {(() => {
+                            const currentFile = diffResult.files.find(f => f.path === selectedDiffPath) || diffResult.files[0];
+
+                            if (!currentFile) {
+                              return (
+                                <div className="flex-1 flex items-center justify-center text-gray-500 text-xs italic p-6">
+                                  Выберите файл для просмотра диффа
+                                </div>
+                              );
+                            }
+
+                            let statusLabel = 'Изменен (Modified)';
+                            let statusColor = 'text-amber-400';
+                            if (currentFile.status === 'added') {
+                              statusLabel = 'Новый файл (Added)';
+                              statusColor = 'text-emerald-400';
+                            } else if (currentFile.status === 'deleted') {
+                              statusLabel = 'Удаленный файл (Deleted)';
+                              statusColor = 'text-rose-400';
+                            }
+
+                            return (
+                              <>
+                                {/* Шапка файла */}
+                                <div className="p-3 bg-[#131722] border-b border-[#232b3d] flex flex-wrap items-center justify-between gap-2 text-xs">
+                                  <div className="flex items-center gap-2 min-w-0">
+                                    <span className="font-bold text-white font-mono truncate">
+                                      {currentFile.path}
+                                    </span>
+                                    <span className={`text-[10px] font-bold font-sans ${statusColor}`}>
+                                      ({statusLabel})
+                                    </span>
+                                  </div>
+
+                                  <div className="flex items-center gap-2 font-mono text-[11px] text-gray-400">
+                                    {currentFile.isBinary ? (
+                                      <span className="text-gray-500 italic">Бинарный файл</span>
+                                    ) : (
+                                      <>
+                                        <span className="text-emerald-400 font-bold">+{currentFile.additions}</span>
+                                        <span className="text-rose-400 font-bold">-{currentFile.deletions}</span>
+                                        <span className="text-gray-600">|</span>
+                                        <span>{currentFile.lines.length} строк</span>
+                                      </>
+                                    )}
+                                  </div>
+                                </div>
+
+                                {/* Окно с кодом */}
+                                <div className="flex-1 overflow-auto font-mono text-xs p-2 leading-relaxed select-text bg-[#0a0d14]">
+                                  {currentFile.isBinary ? (
+                                    <div className="p-8 text-center text-gray-400 space-y-2">
+                                      <div className="text-2xl">📦</div>
+                                      <div className="font-bold text-white">Двоичный файл</div>
+                                      <p className="text-[11px] text-gray-500 max-w-sm mx-auto">
+                                        Файл бинарного формата (размер: {formatBytes(currentFile.newSize || currentFile.oldSize || 0)}). Построчный текстовый дифф недоступен, но файл будет корректно передан на GitHub при пуше.
+                                      </p>
+                                    </div>
+                                  ) : currentFile.lines.length === 0 ? (
+                                    <div className="p-6 text-center text-gray-500 text-xs italic">
+                                      Файл пуст или изменения отсутствуют
+                                    </div>
+                                  ) : (
+                                    <div className="min-w-full inline-block">
+                                      {currentFile.lines.map((line, idx) => {
+                                        let rowBg = 'hover:bg-[#131826] text-gray-400';
+                                        let sign = ' ';
+                                        let signColor = 'text-gray-600';
+
+                                        if (line.type === 'add') {
+                                          rowBg = 'bg-emerald-950/40 text-emerald-200 border-l-2 border-emerald-500';
+                                          sign = '+';
+                                          signColor = 'text-emerald-400 font-bold';
+                                        } else if (line.type === 'delete') {
+                                          rowBg = 'bg-rose-950/40 text-rose-200 border-l-2 border-rose-500';
+                                          sign = '-';
+                                          signColor = 'text-rose-400 font-bold';
+                                        }
+
+                                        return (
+                                          <div
+                                            key={idx}
+                                            className={`flex items-start font-mono text-[11px] px-2 py-0.5 ${rowBg}`}
+                                          >
+                                            {/* Старый номер строки */}
+                                            <span className="w-10 text-right text-gray-600 select-none pr-2 flex-shrink-0">
+                                              {line.oldLineNumber || ''}
+                                            </span>
+
+                                            {/* Новый номер строки */}
+                                            <span className="w-10 text-right text-gray-600 select-none pr-3 flex-shrink-0">
+                                              {line.newLineNumber || ''}
+                                            </span>
+
+                                            {/* Знак диффа */}
+                                            <span className={`w-4 select-none flex-shrink-0 ${signColor}`}>
+                                              {sign}
+                                            </span>
+
+                                            {/* Текст строки */}
+                                            <span className="whitespace-pre overflow-x-auto flex-1">
+                                              {line.content || ' '}
+                                            </span>
+                                          </div>
+                                        );
+                                      })}
+                                    </div>
+                                  )}
+                                </div>
+                              </>
+                            );
+                          })()}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* 4. Блок подтверждения отправки (Push) в GitHub */}
+                    {diffResult.summary.totalChanged > 0 && (
+                      <div className="bg-[#141722] border border-[#242b3d] rounded-2xl p-4 sm:p-5 space-y-4 shadow-xl">
+                        <div className="flex items-center gap-2">
+                          <span className="text-lg">📦</span>
+                          <div>
+                            <h4 className="text-xs font-bold uppercase tracking-wider text-white">
+                              Фиксация и отправка изменений
+                            </h4>
+                            <p className="text-[11px] text-gray-400">
+                              Будет создан коммит в ветку <code className="text-emerald-300 font-mono">{pushBranchInput}</code> репозитория <code className="text-emerald-300 font-mono">{pushRepoInput}</code>
+                            </p>
+                          </div>
+                        </div>
+
+                        <div>
+                          <label className="block text-[11px] font-bold text-gray-300 mb-1">
+                            Сообщение коммита (Commit Message):
+                          </label>
+                          <input
+                            type="text"
+                            value={pushCommitMessage}
+                            onChange={(e) => setPushCommitMessage(e.target.value)}
+                            placeholder={`feat: release v${diffResult.nextVersion} (build ${diffResult.nextBuild})`}
+                            className="w-full bg-[#0d1017] border border-[#283248] focus:border-emerald-500 rounded-xl px-3.5 py-2.5 text-xs text-white placeholder-gray-600 focus:outline-none transition-colors"
+                          />
+                        </div>
+
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-1">
+                          <label className="flex items-center gap-2 cursor-pointer text-xs text-gray-400 hover:text-gray-300 select-none">
+                            <input
+                              type="checkbox"
+                              checked={pushForce}
+                              onChange={(e) => setPushForce(e.target.checked)}
+                              className="rounded border-[#3a4763] text-emerald-600 focus:ring-0 bg-[#0d1017]"
+                            />
+                            <span>Форсированный пуш (Force push)</span>
+                          </label>
+
+                          <button
+                            type="button"
+                            onClick={() => handleExecutePush()}
+                            disabled={isPushing}
+                            className="px-6 py-3 bg-gradient-to-r from-emerald-600 via-teal-600 to-emerald-600 hover:from-emerald-500 hover:to-teal-500 text-white rounded-xl text-xs font-black transition-all shadow-xl shadow-emerald-950/60 flex items-center justify-center gap-2 active:scale-95 border border-emerald-400/80 disabled:opacity-50"
+                          >
+                            {isPushing ? (
+                              <>
+                                <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                                <span>Отправка в GitHub (создание коммита...)...</span>
+                              </>
+                            ) : (
+                              <>
+                                <span>🚀</span>
+                                <span>Отправить Push в GitHub (v{diffResult.nextVersion})</span>
+                              </>
+                            )}
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div className="p-8 bg-[#141722] border border-[#242b3d] rounded-2xl text-center space-y-3">
+                    <p className="text-xs text-gray-400">
+                      Нажмите «Обновить Diff» для расчета изменений проекта относительно репозитория GitHub.
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => fetchPushDiff()}
+                      className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-bold transition-all shadow-lg shadow-emerald-900/30"
+                    >
+                      Проверить Diff правок
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* ВКЛАДКА 3: ПОИСК И СКАЧИВАНИЕ ФАЙЛОВ */}
             {gitHubModalTab === 'files' && (
               <>
                 {/* Блок подключения репозитория */}
@@ -3560,7 +4163,11 @@ export default function App() {
             {/* Подвал модального окна */}
             <div className="p-3 sm:p-4 bg-[#181b24] border-t border-[#282f42] flex flex-wrap items-center justify-between gap-3 flex-shrink-0 text-xs">
               <p className="text-[11px] text-gray-400 font-sans">
-                {gitHubModalTab === 'update' ? (
+                {gitHubModalTab === 'push' ? (
+                  <>
+                    Отправка правок через GitHub Git API. При каждом пуше автоматически повышается версия проекта в <code className="text-emerald-400 font-mono">version.json</code>, <code className="text-emerald-400 font-mono">VERSION</code> и <code className="text-emerald-400 font-mono">package.json</code>.
+                  </>
+                ) : gitHubModalTab === 'update' ? (
                   <>
                     Синхронизация происходит напрямую с репозиторием GitHub. Токен требуется только для приватных репо.
                   </>

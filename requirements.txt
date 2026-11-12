@@ -1,4 +1,0 @@
-networkx
-pdf2markdown4llm
-google-generativeai
-python-dotenv

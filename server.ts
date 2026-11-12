@@ -9,6 +9,7 @@ import path from 'path'; // path
 import { fileURLToPath } from 'url'; // fileURLToPath
 import { createServer as createViteServer } from 'vite'; // createServer
 import multer from 'multer'; // multer
+import { scanProjectFiles, computeLineDiff, computeNextVersion, bumpProjectVersion, isBinaryPath, FileDiffResult } from './src/typescript/diff_utils.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -1026,19 +1027,16 @@ async function startServer() {
         if (cmp > 0) {
           hasVersionDiff = true;
           versionDiffStatus = 'newer';
-          versionComparisonMessage = `На GitHub найдена более новая версия в ${remoteAppVersion.fileSource}: v${remoteAppVersion.version} (локально: v${localAppVersion.version}). Доступно обновление.`;
+          versionComparisonMessage = `На GitHub найдена новая версия в ${remoteAppVersion.fileSource}: v${remoteAppVersion.version} (локально: v${localAppVersion.version})`;
         } else if (cmp < 0) {
           versionDiffStatus = 'older';
-          versionComparisonMessage = `В репозитории обнаружена более старая версия (v${remoteAppVersion.version}), чем локальная (v${localAppVersion.version}). Доступен откат.`;
+          versionComparisonMessage = `Локальная версия (v${localAppVersion.version}) новее, чем в репозитории (v${remoteAppVersion.version})`;
         } else {
           // Версии равны, проверяем билд
           if (typeof remoteAppVersion.build === 'number' && typeof localAppVersion.build === 'number' && remoteAppVersion.build > localAppVersion.build) {
             hasVersionDiff = true;
             versionDiffStatus = 'newer';
-            versionComparisonMessage = `На GitHub найден более свежий билд #${remoteAppVersion.build} (локально: #${localAppVersion.build}). Доступно обновление.`;
-          } else if (typeof remoteAppVersion.build === 'number' && typeof localAppVersion.build === 'number' && remoteAppVersion.build < localAppVersion.build) {
-            versionDiffStatus = 'older';
-            versionComparisonMessage = `В репозитории обнаружен более старый билд #${remoteAppVersion.build} (локально: #${localAppVersion.build}). Доступен откат.`;
+            versionComparisonMessage = `На GitHub найден более свежий билд #${remoteAppVersion.build} (локально: #${localAppVersion.build})`;
           } else {
             versionDiffStatus = 'same';
             versionComparisonMessage = `Версии в ${localAppVersion.fileSource} совпадают: v${localAppVersion.version}`;
@@ -1107,16 +1105,11 @@ async function startServer() {
         hasCodeDiff = !Boolean(localSha && remoteSha && (localSha === remoteSha || localSha.startsWith(remoteSha) || remoteSha.startsWith(localSha)));
       }
 
-      // --- ОБЩИЙ РЕЗУЛЬТАТ АКТУАЛЬНОСТИ И ДЕЙСТВИЯ (ОБНОВЛЕНИЕ / ОТКАТ) ---
-      let actionType: 'update' | 'rollback' | 'none' = 'none';
-      if (versionDiffStatus === 'older') {
-        actionType = 'rollback';
-      } else if (versionDiffStatus === 'newer' || hasCodeDiff) {
-        actionType = 'update';
-      }
-
-      // Проект считается полностью актуальным только если версии совпадают и нет различий в коде
-      const isUpToDate = actionType === 'none';
+      // --- ОБЩИЙ РЕЗУЛЬТАТ АКТУАЛЬНОСТИ ПРОЕКТА ---
+      // Проект считается актуальным ТОЛЬКО если:
+      // 1. Нет более новой версии в специальном файле версии (hasVersionDiff === false)
+      // 2. Нет различий в коде файлов (hasCodeDiff === false)
+      const isUpToDate = !hasVersionDiff && !hasCodeDiff;
 
       // Если код идентичен и версия актуальна, автоматически синхронизируем локальный .project_version.json
       let currentVersion = localVersion;
@@ -1132,6 +1125,7 @@ async function startServer() {
           syncedAt: new Date().toISOString(),
           appVersion: localAppVersion.version,
           build: localAppVersion.build,
+          releaseName: localAppVersion.releaseName,
           fileSource: localAppVersion.fileSource
         };
         try {
@@ -1183,7 +1177,6 @@ async function startServer() {
 
       res.json({
         upToDate: isUpToDate,
-        actionType,
         hasVersionDiff,
         versionDiffStatus,
         versionComparisonMessage,
@@ -1397,16 +1390,532 @@ async function startServer() {
 
       fs.writeFileSync(PROJECT_VERSION_FILE, JSON.stringify(updatedVersion, null, 2), 'utf8');
 
-      const isRollback = req.body.actionType === 'rollback' || req.body.isRollback;
-      const actionText = isRollback ? 'откачен до версии' : 'обновлен до версии';
       res.json({
         success: true,
-        message: `Проект успешно ${actionText} ${appliedCommitInfo.shortSha}: «${appliedCommitInfo.message?.split('\n')[0]}»`,
+        message: `Проект успешно обновлен до версии ${appliedCommitInfo.shortSha}: «${appliedCommitInfo.message?.split('\n')[0]}»`,
         version: updatedVersion,
         updatedFiles
       });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Эндпоинт вычисления диффа для отправки в GitHub
+  app.post('/api/project/push-diff', async (req, res) => {
+    try {
+      const rawRepo = req.body.repoUrl || req.body.repo || 'gregpost/pcb-ai-validator';
+      const branchReq = req.body.branch;
+      const token = req.body.token || req.headers['x-github-token'];
+      const bumpType = (req.body.bumpType as 'patch' | 'minor' | 'major') || 'patch';
+
+      const parsed = parseGitHubRepo(rawRepo);
+      if (!parsed) {
+        return res.status(400).json({
+          error: 'Неверный формат репозитория. Введите "owner/repo" или ссылку "https://github.com/owner/repo".'
+        });
+      }
+
+      const branch = parsed.branch || branchReq || 'main';
+      const headers = getGitHubHeaders(token as string);
+
+      // 1. Получаем HEAD коммит целевой ветки
+      const refRes = await fetch(
+        `https://api.github.com/repos/${parsed.owner}/${parsed.repo}/git/ref/heads/${encodeURIComponent(branch)}`,
+        { headers }
+      );
+
+      if (!refRes.ok) {
+        if (refRes.status === 404) {
+          return res.status(404).json({
+            error: `Ветка "${branch}" не найдена в репозитории "${parsed.owner}/${parsed.repo}". Убедитесь, что репозиторий существует и к нему есть доступ.`
+          });
+        }
+        if (refRes.status === 401) {
+          return res.status(401).json({
+            error: 'Неверный или просроченный токен GitHub (PAT). Проверьте токен в настройках.'
+          });
+        }
+        return res.status(refRes.status).json({
+          error: `Ошибка доступа к GitHub: ${refRes.statusText} (${refRes.status})`
+        });
+      }
+
+      const refData: any = await refRes.json();
+      const commitSha = refData.object?.sha;
+
+      // 2. Получаем дерево коммита
+      const commitRes = await fetch(
+        `https://api.github.com/repos/${parsed.owner}/${parsed.repo}/git/commits/${commitSha}`,
+        { headers }
+      );
+      const commitData: any = await commitRes.json();
+      const treeSha = commitData.tree?.sha;
+
+      // 3. Получаем удаленное дерево файлов
+      const treeRes = await fetch(
+        `https://api.github.com/repos/${parsed.owner}/${parsed.repo}/git/trees/${encodeURIComponent(treeSha)}?recursive=1`,
+        { headers }
+      );
+      const treeData: any = await treeRes.json();
+      const remoteItems: Array<{ path: string; mode: string; type: string; sha: string; size?: number }> = treeData.tree || [];
+
+      const remoteMap = new Map<string, { sha: string; size?: number }>();
+      for (const item of remoteItems) {
+        if (item.type === 'blob') {
+          remoteMap.set(item.path, { sha: item.sha, size: item.size });
+        }
+      }
+
+      // 4. Сканируем локальные файлы проекта
+      const localFiles = scanProjectFiles(__dirname);
+
+      // 5. Выявляем изменения
+      const diffFilesList: Array<{
+        path: string;
+        status: 'modified' | 'added' | 'deleted';
+        isBinary: boolean;
+        oldSize?: number;
+        newSize?: number;
+        localSha?: string;
+        remoteSha?: string;
+      }> = [];
+
+      // Проверяем локальные файлы
+      for (const [relPath, fileInfo] of localFiles.entries()) {
+        const remote = remoteMap.get(relPath);
+        if (!remote) {
+          diffFilesList.push({
+            path: relPath,
+            status: 'added',
+            isBinary: fileInfo.isBinary,
+            newSize: fileInfo.size,
+            localSha: fileInfo.sha
+          });
+        } else if (remote.sha !== fileInfo.sha) {
+          diffFilesList.push({
+            path: relPath,
+            status: 'modified',
+            isBinary: fileInfo.isBinary,
+            oldSize: remote.size,
+            newSize: fileInfo.size,
+            localSha: fileInfo.sha,
+            remoteSha: remote.sha
+          });
+        }
+      }
+
+      // Проверяем удаленные файлы
+      for (const [relPath, remoteInfo] of remoteMap.entries()) {
+        if (!localFiles.has(relPath)) {
+          if (
+            relPath.startsWith('node_modules/') ||
+            relPath.startsWith('.git/') ||
+            relPath.startsWith('dist/') ||
+            relPath.startsWith('runs/') ||
+            relPath.startsWith('tmp/') ||
+            relPath === 'bun.lock' ||
+            relPath === '.DS_Store'
+          ) {
+            continue;
+          }
+          diffFilesList.push({
+            path: relPath,
+            status: 'deleted',
+            isBinary: isBinaryPath(relPath),
+            oldSize: remoteInfo.size,
+            remoteSha: remoteInfo.sha
+          });
+        }
+      }
+
+      diffFilesList.sort((a, b) => {
+        const order = { modified: 0, added: 1, deleted: 2 };
+        if (order[a.status] !== order[b.status]) {
+          return order[a.status] - order[b.status];
+        }
+        return a.path.localeCompare(b.path);
+      });
+
+      // 6. Вычисляем построчный дифф
+      const detailedDiffs: FileDiffResult[] = [];
+      let totalAdditions = 0;
+      let totalDeletions = 0;
+
+      for (const item of diffFilesList) {
+        if (item.isBinary) {
+          detailedDiffs.push({
+            path: item.path,
+            status: item.status,
+            isBinary: true,
+            oldSize: item.oldSize,
+            newSize: item.newSize,
+            additions: 0,
+            deletions: 0,
+            lines: []
+          });
+          continue;
+        }
+
+        let oldText = '';
+        let newText = '';
+
+        if (item.status === 'modified' || item.status === 'deleted') {
+          try {
+            const rawUrl = `https://raw.githubusercontent.com/${parsed.owner}/${parsed.repo}/${encodeURIComponent(branch)}/${item.path.split('/').map(encodeURIComponent).join('/')}`;
+            const rawRes = await fetch(rawUrl, { headers });
+            if (rawRes.ok) {
+              oldText = await rawRes.text();
+            } else if (item.remoteSha) {
+              const blobRes = await fetch(
+                `https://api.github.com/repos/${parsed.owner}/${parsed.repo}/git/blobs/${item.remoteSha}`,
+                { headers: { ...headers, Accept: 'application/vnd.github.v3.raw' } }
+              );
+              if (blobRes.ok) {
+                oldText = await blobRes.text();
+              }
+            }
+          } catch (fetchErr) {
+            console.warn(`Failed fetching remote file for diff: ${item.path}`, fetchErr);
+          }
+        }
+
+        if (item.status === 'modified' || item.status === 'added') {
+          const fullLocalPath = path.join(__dirname, item.path);
+          try {
+            if (fs.existsSync(fullLocalPath)) {
+              newText = fs.readFileSync(fullLocalPath, 'utf8');
+            }
+          } catch (readErr) {
+            console.warn(`Failed reading local file for diff: ${item.path}`, readErr);
+          }
+        }
+
+        const diff = computeLineDiff(oldText, newText);
+        totalAdditions += diff.additions;
+        totalDeletions += diff.deletions;
+
+        detailedDiffs.push({
+          path: item.path,
+          status: item.status,
+          isBinary: false,
+          oldSize: item.oldSize,
+          newSize: item.newSize,
+          additions: diff.additions,
+          deletions: diff.deletions,
+          lines: diff.lines
+        });
+      }
+
+      const currentSpecial = getLocalSpecialVersion();
+      const nextVersion = computeNextVersion(currentSpecial.version, bumpType);
+      const nextBuild = (currentSpecial.build || 1) + 1;
+
+      res.json({
+        repo: `${parsed.owner}/${parsed.repo}`,
+        branch,
+        commitSha,
+        shortSha: commitSha.slice(0, 7),
+        currentVersion: currentSpecial.version,
+        currentBuild: currentSpecial.build || 1,
+        nextVersion,
+        nextBuild,
+        bumpType,
+        summary: {
+          totalChanged: detailedDiffs.length,
+          additions: totalAdditions,
+          deletions: totalDeletions,
+          modifiedCount: detailedDiffs.filter(d => d.status === 'modified').length,
+          addedCount: detailedDiffs.filter(d => d.status === 'added').length,
+          deletedCount: detailedDiffs.filter(d => d.status === 'deleted').length
+        },
+        files: detailedDiffs
+      });
+    } catch (err: any) {
+      console.error('Push diff error:', err);
+      res.status(500).json({ error: err.message || 'Ошибка вычисления диффа правок' });
+    }
+  });
+
+  // Эндпоинт отправки изменений (Push) в GitHub с автоповышением версии
+  app.post('/api/project/push', async (req, res) => {
+    try {
+      const rawRepo = req.body.repoUrl || req.body.repo || 'gregpost/pcb-ai-validator';
+      const branchReq = req.body.branch;
+      const token = (req.body.token || req.headers['x-github-token'] || process.env.GITHUB_TOKEN || '').trim();
+      const userMessage = (req.body.commitMessage || '').trim();
+      const bumpType = (req.body.bumpType as 'patch' | 'minor' | 'major') || 'patch';
+      const forcePush = Boolean(req.body.forcePush);
+
+      if (!token) {
+        return res.status(401).json({
+          error: 'Для отправки изменений на GitHub требуется Personal Access Token (PAT) с правами на запись (scope "repo" или "Contents: Read & Write"). Пожалуйста, укажите токен.'
+        });
+      }
+
+      const parsed = parseGitHubRepo(rawRepo);
+      if (!parsed) {
+        return res.status(400).json({
+          error: 'Неверный формат репозитория. Введите "owner/repo" или ссылку "https://github.com/owner/repo".'
+        });
+      }
+
+      const branch = parsed.branch || branchReq || 'main';
+      const headers = getGitHubHeaders(token);
+
+      // 1. Получаем HEAD коммит ветки
+      const refRes = await fetch(
+        `https://api.github.com/repos/${parsed.owner}/${parsed.repo}/git/ref/heads/${encodeURIComponent(branch)}`,
+        { headers }
+      );
+
+      if (!refRes.ok) {
+        if (refRes.status === 404) {
+          return res.status(404).json({
+            error: `Ветка "${branch}" не найдена в "${parsed.owner}/${parsed.repo}". Убедитесь, что репозиторий существует и токен имеет права.`
+          });
+        }
+        if (refRes.status === 401) {
+          return res.status(401).json({
+            error: 'Недействительный токен GitHub (401 Bad credentials). Проверьте правильность Personal Access Token.'
+          });
+        }
+        return res.status(refRes.status).json({
+          error: `Ошибка доступа к GitHub: ${refRes.statusText} (${refRes.status})`
+        });
+      }
+
+      const refData: any = await refRes.json();
+      const parentCommitSha = refData.object?.sha;
+
+      // 2. Получаем базовое дерево коммита
+      const commitRes = await fetch(
+        `https://api.github.com/repos/${parsed.owner}/${parsed.repo}/git/commits/${parentCommitSha}`,
+        { headers }
+      );
+      const commitData: any = await commitRes.json();
+      const baseTreeSha = commitData.tree?.sha;
+
+      // 3. Получаем удаленное дерево файлов
+      const treeRes = await fetch(
+        `https://api.github.com/repos/${parsed.owner}/${parsed.repo}/git/trees/${encodeURIComponent(baseTreeSha)}?recursive=1`,
+        { headers }
+      );
+      const treeData: any = await treeRes.json();
+      const remoteItems: Array<{ path: string; mode: string; type: string; sha: string }> = treeData.tree || [];
+
+      const remoteMap = new Map<string, { sha: string; mode: string }>();
+      for (const item of remoteItems) {
+        if (item.type === 'blob') {
+          remoteMap.set(item.path, { sha: item.sha, mode: item.mode });
+        }
+      }
+
+      // 4. АВТОМАТИЧЕСКИ ПОВЫШАЕМ ВЕРСИЮ ПРОЕКТА ПЕРЕД КОММИТОМ
+      const bumpResult = bumpProjectVersion(__dirname, bumpType);
+      console.log(`[Push] Bumped version from v${bumpResult.oldVersion} to v${bumpResult.newVersion} (build ${bumpResult.newBuild})`);
+
+      // 5. Сканируем локальные файлы проекта с обновленной версией
+      const localFiles = scanProjectFiles(__dirname);
+
+      // 6. Формируем список файлов для коммита
+      const treeEntries: Array<{ path: string; mode: string; type: 'blob'; sha: string | null }> = [];
+      const filesToUpload: Array<{ path: string; fullPath: string; isBinary: boolean }> = [];
+
+      for (const [relPath, fileInfo] of localFiles.entries()) {
+        const remote = remoteMap.get(relPath);
+        if (!remote || remote.sha !== fileInfo.sha) {
+          filesToUpload.push({
+            path: relPath,
+            fullPath: fileInfo.fullPath,
+            isBinary: fileInfo.isBinary
+          });
+        }
+      }
+
+      // Удаленные файлы
+      for (const [relPath] of remoteMap.entries()) {
+        if (!localFiles.has(relPath)) {
+          if (
+            relPath.startsWith('node_modules/') ||
+            relPath.startsWith('.git/') ||
+            relPath.startsWith('dist/') ||
+            relPath.startsWith('runs/') ||
+            relPath.startsWith('tmp/') ||
+            relPath === 'bun.lock' ||
+            relPath === '.DS_Store'
+          ) {
+            continue;
+          }
+          treeEntries.push({
+            path: relPath,
+            mode: '100644',
+            type: 'blob',
+            sha: null
+          });
+        }
+      }
+
+      if (filesToUpload.length === 0 && treeEntries.length === 0) {
+        return res.json({
+          success: true,
+          alreadyUpToDate: true,
+          message: 'Все файлы уже совпадают с репозиторием GitHub. Изменений для отправки не обнаружено.',
+          newVersion: bumpResult.newVersion
+        });
+      }
+
+      // 7. Создаем Blobs на GitHub для всех добавленных/измененных файлов
+      for (const item of filesToUpload) {
+        const contentBuf = fs.readFileSync(item.fullPath);
+        let payload: { content: string; encoding: 'utf-8' | 'base64' };
+
+        if (item.isBinary) {
+          payload = {
+            content: contentBuf.toString('base64'),
+            encoding: 'base64'
+          };
+        } else {
+          payload = {
+            content: contentBuf.toString('utf8'),
+            encoding: 'utf-8'
+          };
+        }
+
+        const blobRes = await fetch(
+          `https://api.github.com/repos/${parsed.owner}/${parsed.repo}/git/blobs`,
+          {
+            method: 'POST',
+            headers: { ...headers, 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+          }
+        );
+
+        if (!blobRes.ok) {
+          const blobErrText = await blobRes.text();
+          throw new Error(`Ошибка загрузки blob для файла ${item.path}: ${blobErrText} (${blobRes.status})`);
+        }
+
+        const blobData: any = await blobRes.json();
+        const mode = item.path.startsWith('scripts/') ? '100755' : '100644';
+        treeEntries.push({
+          path: item.path,
+          mode,
+          type: 'blob',
+          sha: blobData.sha
+        });
+      }
+
+      // 8. Создаем Git Tree
+      const newTreeRes = await fetch(
+        `https://api.github.com/repos/${parsed.owner}/${parsed.repo}/git/trees`,
+        {
+          method: 'POST',
+          headers: { ...headers, 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            base_tree: baseTreeSha,
+            tree: treeEntries
+          })
+        }
+      );
+
+      if (!newTreeRes.ok) {
+        const treeErrText = await newTreeRes.text();
+        throw new Error(`Ошибка создания Git tree: ${treeErrText} (${newTreeRes.status})`);
+      }
+
+      const newTreeData: any = await newTreeRes.json();
+      const newTreeSha = newTreeData.sha;
+
+      // 9. Создаем Commit
+      const defaultCommitMsg = `feat: release v${bumpResult.newVersion} (build ${bumpResult.newBuild})\n\nUpdated ${treeEntries.length} files`;
+      const finalCommitMessage = userMessage ? `${userMessage}\n\nv${bumpResult.newVersion}` : defaultCommitMsg;
+
+      const newCommitRes = await fetch(
+        `https://api.github.com/repos/${parsed.owner}/${parsed.repo}/git/commits`,
+        {
+          method: 'POST',
+          headers: { ...headers, 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            message: finalCommitMessage,
+            tree: newTreeSha,
+            parents: [parentCommitSha]
+          })
+        }
+      );
+
+      if (!newCommitRes.ok) {
+        const commitErrText = await newCommitRes.text();
+        throw new Error(`Ошибка создания коммита: ${commitErrText} (${newCommitRes.status})`);
+      }
+
+      const newCommitData: any = await newCommitRes.json();
+      const newCommitSha = newCommitData.sha;
+
+      // 10. Обновляем ветку (Push)
+      const updateRefRes = await fetch(
+        `https://api.github.com/repos/${parsed.owner}/${parsed.repo}/git/refs/heads/${encodeURIComponent(branch)}`,
+        {
+          method: 'PATCH',
+          headers: { ...headers, 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            sha: newCommitSha,
+            force: forcePush
+          })
+        }
+      );
+
+      if (!updateRefRes.ok) {
+        const refErr = await updateRefRes.json().catch(() => ({}));
+        if (updateRefRes.status === 422) {
+          return res.status(422).json({
+            error: 'Ветка на GitHub содержит новые коммиты (Fast-forward отклонен). Сначала обновите проект (Pull) или включите опцию «Форсированный пуш (Force push)».',
+            details: refErr
+          });
+        }
+        throw new Error(`Не удалось обновить ветку ${branch}: ${JSON.stringify(refErr)} (${updateRefRes.status})`);
+      }
+
+      // 11. Обновляем локальный .project_version.json
+      const nowIso = new Date().toISOString();
+      const updatedLocalVersion = {
+        repo: `${parsed.owner}/${parsed.repo}`,
+        branch,
+        commitSha: newCommitSha,
+        shortSha: newCommitSha.slice(0, 7),
+        commitMessage: finalCommitMessage,
+        author: newCommitData.author?.name || 'PCB AI Validator User',
+        commitDate: nowIso,
+        syncedAt: nowIso,
+        appVersion: bumpResult.newVersion,
+        build: bumpResult.newBuild,
+        releaseName: 'PCB AI Validator Release',
+        fileSource: 'version.json',
+        updatedFilesCount: treeEntries.length
+      };
+
+      try {
+        fs.writeFileSync(PROJECT_VERSION_FILE, JSON.stringify(updatedLocalVersion, null, 2) + '\n', 'utf8');
+      } catch (e) {
+        console.warn('Could not update .project_version.json:', e);
+      }
+
+      res.json({
+        success: true,
+        newCommitSha,
+        shortSha: newCommitSha.slice(0, 7),
+        commitUrl: `https://github.com/${parsed.owner}/${parsed.repo}/commit/${newCommitSha}`,
+        repo: `${parsed.owner}/${parsed.repo}`,
+        branch,
+        oldVersion: bumpResult.oldVersion,
+        newVersion: bumpResult.newVersion,
+        newBuild: bumpResult.newBuild,
+        pushedFilesCount: treeEntries.length,
+        message: `Успешно отправлено в ${parsed.owner}/${parsed.repo} (${branch})! Создан коммит ${newCommitSha.slice(0, 7)}, версия повышена с v${bumpResult.oldVersion} до v${bumpResult.newVersion} (сборка ${bumpResult.newBuild}).`
+      });
+    } catch (err: any) {
+      console.error('Push error:', err);
+      res.status(500).json({ error: err.message || 'Ошибка отправки пуша в GitHub' });
     }
   });
 
@@ -1709,8 +2218,8 @@ async function startServer() {
       try {
         execSync(`npx tsx scripts/pip-dev.ts`, { env: { ...process.env, PYTHON_EXECUTABLE: pyPath } });
         logs += "pip успешно установлен.\n";
-      } catch (e2) {
-        const msg = `\n[FATAL ERROR] Не удалось установить pip: ${e2.message}\n`;
+      } catch (e2: any) {
+        const msg = `\n[FATAL ERROR] Не удалось установить pip: ${e2?.message || String(e2)}\n`;
         const failMsg = "\n[FATAL ERROR] ПРОЦЕСС ЗАВЕРШЕН С ОШИБКОЙ\n";
         logs += msg + failMsg;
         fs.appendFileSync(LOG_FILE, msg + failMsg);
